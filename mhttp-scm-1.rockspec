@@ -3,7 +3,7 @@ package = 'mhttp'
 version = 'scm-1'
 
 source = {
-  url = 'git+https://git.offblast.org/mischief/mhttp.git',
+  url = 'git+https://github.com/mischief/mhttp.git',
   branch = 'main',
 }
 
@@ -15,7 +15,7 @@ serializer do no I/O; the server and the client use a small stream
 interface, so any event loop or coroutine scheduler can drive them.
 Framing is strict against request smuggling and response splitting.
 ]],
-  homepage = 'https://git.offblast.org/mischief/mhttp',
+  homepage = 'https://github.com/mischief/mhttp',
   license = 'ISC',
   labels = { 'http', 'parser', 'sans-io' },
 }
