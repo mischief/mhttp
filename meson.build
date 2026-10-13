@@ -1,0 +1,34 @@
+# Pure Lua: nothing is built, only installed, tested and measured.
+project('mhttp', version : '0.1.0', meson_version : '>= 0.64.0',
+        license : 'ISC')
+
+lua_version = get_option('lua_version')
+lua = find_program('lua' + lua_version, 'lua', required : true)
+luadir = get_option('datadir') / 'lua' / lua_version
+
+install_subdir('mhttp', install_dir : luadir)
+
+src = meson.current_source_dir()
+
+foreach t : ['request', 'response', 'smuggle', 'wire', 'split', 'coro', 'url', 'router',
+            'http', 'event']
+  test(t, lua, args : [files('test' / t + '.lua')],
+       protocol : 'tap', workdir : src, timeout : 120)
+endforeach
+
+# meson test --benchmark -v
+benchmark('parse', lua, args : [files('bench/parse.lua')],
+          workdir : src, timeout : 300)
+foreach m : ['fork', 'event']
+  foreach c : ['1', '4', '16']
+    benchmark('rps-' + m + '-' + c, lua,
+              args : [files('bench/rps.lua'), m, c, get_option('bench_seconds')],
+              workdir : src, timeout : 300)
+  endforeach
+endforeach
+foreach w : ['4', '8']
+  benchmark('rps-reuseport-' + w, lua,
+            args : [files('bench/rps.lua'), 'reuseport', '16',
+                    get_option('bench_seconds'), '13', w],
+            workdir : src, timeout : 300)
+endforeach
