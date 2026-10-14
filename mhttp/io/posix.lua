@@ -337,6 +337,13 @@ function M.listen(host, port, opts)
 		unistd.close(fd)
 		return nil, err
 	end
+	if opts.tls then
+		local tok, terr = require("mhttp.tls").prepare(opts.tls, "server")
+		if not tok then
+			unistd.close(fd)
+			return nil, terr
+		end
+	end
 	M.nonblock(fd)
 	return setmetatable({
 		fd = fd,

@@ -59,6 +59,7 @@ sh("openssl req -x509 " .. EC .. " -keyout ca.key -out ca.pem -days 2 -subj /CN=
 for _, c in ipairs({
 	{ "server", "/CN=localhost", "subjectAltName=DNS:localhost,IP:127.0.0.1" },
 	{ "client", "/CN=alice", "extendedKeyUsage=clientAuth" },
+	{ "other", "/CN=other.test", "subjectAltName=DNS:other.test" },
 }) do
 	local name, subj, ext = c[1], c[2], c[3]
 	sh(("openssl req %s -keyout %s.key -out %s.csr -subj %s"):format(EC, name, name, subj))
@@ -88,6 +89,9 @@ local function with_server(backend, sopts, fn)
 	local loop = mpoll.new({ on_error = function() end })
 	local o = { backend = backend, cert = f("server.pem"), key = f("server.key") }
 	for k, v in pairs(sopts or {}) do
+		if v == false then
+			v = nil
+		end
 		o[k] = v
 	end
 	local l = assert(loop:listen("127.0.0.1", 0, { tls = o }))
@@ -176,6 +180,28 @@ for _, sb in ipairs(backends) do
 			c:close()
 		end)
 	end
+end
+
+-- Several certs: the server picks one by SNI.
+for _, sb in ipairs(backends) do
+	with_server(sb, { certs = { { f("server.pem"), f("server.key") }, { f("other.pem"), f("other.key") } },
+		cert = false, key = false }, function(loop, port)
+		local c = client.new({ timeout = 10, tls = { ca = f("ca.pem") },
+			resolve = function()
+				return { "127.0.0.1" }
+			end,
+			connect = function(h, p, o)
+				return loop:connect(h, p, o)
+			end })
+		local res, err = c:get(("https://other.test:%d/"):format(port))
+		tap.ok(res and res.status == 200, sb:match("[^.]+$") .. " server: SNI picks the second cert")
+		if err then
+			tap.diag(err.message)
+		end
+		res = c:get(("https://localhost:%d/"):format(port))
+		tap.ok(res and res.status == 200, sb:match("[^.]+$") .. " server: SNI picks the first cert")
+		c:close()
+	end)
 end
 
 -- A verify_cb can pin a certificate.

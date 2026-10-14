@@ -19,6 +19,7 @@ local parse = require("mhttp.parse")
 local wire = require("mhttp.wire")
 local headers = require("mhttp.headers")
 local clock = require("mhttp.clock")
+local date = require("mhttp.date")
 
 local M = {}
 
@@ -73,9 +74,6 @@ function Server:shutdown()
 	self.stopping = true
 end
 
-local function http_date()
-	return os.date("!%a, %d %b %Y %H:%M:%S GMT")
-end
 
 -- One connection.
 local Conn = {}
@@ -324,7 +322,7 @@ function Response:start(status, h)
 		end
 	end
 	if c.srv.date and not hs:has("date") then
-		hs:add("Date", http_date())
+		hs:add("Date", date.format())
 	end
 	if c.srv.name and not hs:has("server") then
 		hs:add("Server", c.srv.name)
@@ -422,6 +420,14 @@ function Response:finish(data, trailers)
 		return ok and nil, "fewer bytes than content-length"
 	end
 	return self:send_raw("")
+end
+
+--- Gives up on the response. The connection closes without an end to
+-- the body, so the client sees that it is cut short. A proxy calls it
+-- when the upstream fails in the middle of a body.
+function Response:abort()
+	self.finished = true
+	self.conn.broken = true
 end
 
 --- Sends a whole response.

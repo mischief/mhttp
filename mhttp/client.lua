@@ -40,6 +40,8 @@ Client.__index = Client
  - `proxy`: an http:// proxy URL for http:// requests
  - `headers`: fields for every request
  - `timeout`: seconds for a whole request (60)
+ - `idle`: seconds to wait for each read, inside `timeout` (none)
+ - `connect_timeout`: seconds to connect, inside `timeout` (none)
  - `max_idle`: idle connections kept per origin (4)
  - `limits`: limits for `mhttp.parse`
  - `read_size`: bytes per read (64 KiB)
@@ -65,6 +67,8 @@ function M.new(opts)
 		proxy = proxy,
 		headers = headers.new(opts.headers),
 		timeout = opts.timeout or 60,
+		read_idle = opts.idle,
+		connect_timeout = opts.connect_timeout,
 		max_idle = opts.max_idle or 4,
 		limits = opts.limits,
 		read_size = opts.read_size or 64 * 1024,
@@ -90,8 +94,8 @@ function Client:conn(key, host, port, tls, deadline)
 		c.reused = true
 		return c
 	end
-	local s, err = self.connect(host, port,
-		{ deadline = deadline, tls = tls, resolve = self.resolve })
+	local s, err = self.connect(host, port, { tls = tls, resolve = self.resolve,
+		deadline = clock.min(deadline, clock.after(self.connect_timeout)) })
 	if not s then
 		return nil, err
 	end
@@ -119,8 +123,8 @@ end
 local Response = {}
 Response.__index = Response
 
--- Reads the next parser event.
-local function next_event(c, deadline, read_size)
+-- Reads the next parser event. idle bounds each read.
+local function next_event(c, deadline, read_size, idle)
 	while true do
 		local ev, err = c.p:next()
 		if ev then
@@ -129,7 +133,7 @@ local function next_event(c, deadline, read_size)
 		if err then
 			return fail("protocol", err.message)
 		end
-		local data, rerr = c.s:read(read_size, deadline)
+		local data, rerr = c.s:read(read_size, clock.min(deadline, clock.after(idle)))
 		if data then
 			c.p:feed(data)
 			c.got = true
@@ -151,7 +155,7 @@ function Response:read()
 	end
 	local c = self.conn
 	while true do
-		local ev, err = next_event(c, self.deadline, self.client.read_size)
+		local ev, err = next_event(c, self.deadline, self.client.read_size, self.idle)
 		if not ev then
 			self:close()
 			return nil, err
@@ -289,7 +293,7 @@ function Client:once(req, u, deadline)
 	c.p:expect(method)
 	local res
 	while true do
-		local ev, err = next_event(c, deadline, self.read_size)
+		local ev, err = next_event(c, deadline, self.read_size, req.idle or self.read_idle)
 		if not ev then
 			c.s:close()
 			if not ok then
@@ -310,7 +314,8 @@ function Client:once(req, u, deadline)
 		res.keep_alive = false
 	end
 	setmetatable(res, Response)
-	res.client, res.conn, res.deadline = self, c, deadline
+	res.client, res.conn, res.deadline, res.idle = self, c, deadline,
+		req.idle or self.read_idle
 	res.url, res.received, res.max_body = url.format(u), 0, req.max_body
 	if res.status == 101 then
 		return res
@@ -352,7 +357,9 @@ local REDIRECT = { [301] = true, [302] = true, [303] = true, [307] = true, [308]
  - `method` (GET), `headers`
  - `body`: a string, or a function that returns pieces and then nil.
    With a function, `length` sets Content-Length; else it is chunked.
- - `timeout`: seconds for the whole request, redirects included
+ - `timeout`: seconds for the whole request, redirects included;
+   math.huge for none
+ - `idle`: seconds to wait for each read
  - `stream`: true to read the body with `Response:read`
  - `sink(piece, res)`: called for each piece instead of keeping a body
  - `max_body`: fail when the body is larger

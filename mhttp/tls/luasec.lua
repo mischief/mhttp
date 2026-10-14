@@ -51,6 +51,60 @@ local function context(cfg)
 	return ctx
 end
 
+-- For a server with several certs: the context of the first, and a
+-- map from each name in the certs to its context. luasec looks names
+-- up as they are, so a wildcard name matches only itself.
+local snimaps = {}
+
+local function sni_contexts(cfg)
+	local key = table.concat({ cfg.mode, cfg.ca or "", cfg.client_auth or "" }, "\0")
+	for _, c in ipairs(cfg.certs) do
+		key = key .. "\0" .. c[1] .. "\1" .. c[2]
+	end
+	if snimaps[key] then
+		return snimaps[key].first, snimaps[key].map
+	end
+	local x509 = require("ssl.x509")
+	local map, first = {}, nil
+	for _, pair in ipairs(cfg.certs) do
+		local one = {}
+		for k, v in pairs(cfg) do
+			one[k] = v
+		end
+		one.certs, one.cert, one.key = nil, pair[1], pair[2]
+		local ctx, err = context(one)
+		if not ctx then
+			return nil, err
+		end
+		first = first or ctx
+		local f, ferr = io.open(pair[1], "rb")
+		if not f then
+			return nil, ferr
+		end
+		local cert = x509.load(f:read("a"))
+		f:close()
+		local san = cert and (cert:extensions() or {})["2.5.29.17"] or {}
+		for _, name in ipairs(san.dNSName or {}) do
+			map[name:lower()] = map[name:lower()] or ctx
+		end
+	end
+	snimaps[key] = { first = first, map = map }
+	return first, map
+end
+
+--- Loads the files of cfg now, as `mhttp.tls.prepare` asks.
+function M.prepare(cfg)
+	if cfg.mode == "server" and cfg.certs and #cfg.certs > 0 then
+		return sni_contexts(cfg)
+	end
+	return context(cfg)
+end
+
+--- Forgets loaded files, so that new connections read them again.
+function M.reset()
+	contexts, snimaps = {}, {}
+end
+
 local Conn = {}
 Conn.__index = Conn
 
@@ -67,7 +121,13 @@ end
 -- @tparam table cfg from `mhttp.tls`, with `mode` "client" or "server"
 -- @return a connection, or nil and the reason
 function M.new(fd, cfg)
-	local ctx, err = context(cfg)
+	local ctx, err, map
+	if cfg.mode == "server" and cfg.certs and #cfg.certs > 0 then
+		ctx, map = sni_contexts(cfg)
+		err = map
+	else
+		ctx, err = context(cfg)
+	end
 	if not ctx then
 		return nil, err
 	end
@@ -82,6 +142,8 @@ function M.new(fd, cfg)
 	if cfg.mode == "client" and cfg.sni and not cfg.sni:find("^[%d.]+$")
 	    and not cfg.sni:find(":") then
 		c:sni(cfg.sni)
+	elseif map then
+		c:sni(map, false)
 	end
 	return setmetatable({ c = c, ctx = ctx }, Conn)
 end

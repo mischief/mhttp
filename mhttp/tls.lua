@@ -265,8 +265,9 @@ function Stream:info()
 	return self.info_t
 end
 
--- Wraps raw in a TLS stream. Returns the stream, or nil and the reason.
-local function wrap(raw, opts, mode)
+-- Fills in the defaults. Returns the backend and the config, or nil
+-- and the reason.
+local function normalize(opts, mode)
 	local backend, berr = M.backend(opts)
 	if not backend then
 		return nil, berr
@@ -285,6 +286,46 @@ local function wrap(raw, opts, mode)
 		if not cfg.ca and not cfg.ca_dir then
 			return nil, "tls: no CA bundle found; set the ca option"
 		end
+	end
+	return backend, cfg
+end
+
+--[[- Loads the files that opts name now, so that a process can read
+its keys and then give up the rights to read them. `mhttp.io.posix`
+calls it for a listener.
+@tparam table opts
+@tparam string mode "client" or "server"
+@return true, or nil and the reason
+]]
+function M.prepare(opts, mode)
+	local backend, cfg = normalize(opts, mode)
+	if not backend then
+		return nil, cfg
+	end
+	if backend.prepare then
+		local ok, err = backend.prepare(cfg)
+		if not ok then
+			return nil, "tls: " .. tostring(err)
+		end
+	end
+	return true
+end
+
+--- Makes every backend read its files again for new connections.
+function M.reset()
+	for _, name in ipairs(M.backends) do
+		local mod = package.loaded[name]
+		if mod and mod.reset then
+			mod.reset()
+		end
+	end
+end
+
+-- Wraps raw in a TLS stream. Returns the stream, or nil and the reason.
+local function wrap(raw, opts, mode)
+	local backend, cfg = normalize(opts, mode)
+	if not backend then
+		return nil, cfg
 	end
 	local conn, err = backend.new(raw.fd, cfg)
 	if not conn then

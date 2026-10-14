@@ -6,20 +6,22 @@ lua_version = get_option('lua_version')
 lua = find_program('lua' + lua_version, 'lua', required : true)
 luadir = get_option('datadir') / 'lua' / lua_version
 
-install_subdir('mhttp', install_dir : luadir, exclude_files : ['tls/libtls_core.c'])
+install_subdir('mhttp', install_dir : luadir,
+               exclude_files : ['sys.c', 'meson.build', 'tls/libtls_core.c', 'tls/meson.build'])
 
-# The libtls core lands in build/mhttp/tls, so the build directory works
-# as a cpath root for the tests.
+# The C modules land in build/mhttp, so the build directory works as a
+# cpath root for the tests.
 lua_dep = dependency('lua' + lua_version, 'lua-' + lua_version, 'lua', required : false)
 libtls_dep = dependency('libtls', required : get_option('libtls'))
-if lua_dep.found() and libtls_dep.found()
-  subdir('mhttp/tls')
+cmoddir = get_option('libdir') / 'lua' / lua_version / 'mhttp'
+if lua_dep.found()
+  subdir('mhttp')
 endif
 
 src = meson.current_source_dir()
 
 foreach t : ['request', 'response', 'smuggle', 'wire', 'split', 'coro', 'url', 'router',
-            'http', 'event', 'poll', 'tls']
+            'http', 'event', 'poll', 'tls', 'static', 'proxy', 'cgi']
   test(t, lua, args : [files('test' / t + '.lua')],
        protocol : 'tap', workdir : src, timeout : 120,
        env : ['MHTTP_CPATH=' + meson.project_build_root()])

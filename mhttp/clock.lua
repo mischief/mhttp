@@ -26,9 +26,13 @@ else
 	M.now = os.time
 end
 
---- Returns the deadline sec seconds from now, or nil when sec is nil.
+--- Returns the deadline sec seconds from now, or nil when sec is nil
+-- or math.huge.
 function M.after(sec)
-	return sec and M.now() + sec
+	if sec == nil or sec == math.huge then
+		return nil
+	end
+	return M.now() + sec
 end
 
 --- Returns the earlier of two deadlines. Either can be nil.

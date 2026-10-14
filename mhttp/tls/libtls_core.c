@@ -96,6 +96,27 @@ l_config(lua_State *L)
 		return fail(L, tls_config_error(cfg));
 	if (key && tls_config_set_key_file(cfg, key) == -1)
 		return fail(L, tls_config_error(cfg));
+	/* certs = {{cert, key}, ...}: a server picks one by SNI. */
+	lua_getfield(L, 1, "certs");
+	if (lua_istable(L, -1)) {
+		lua_Integer i, n = luaL_len(L, -1);
+
+		for (i = 1; i <= n; i++) {
+			lua_geti(L, -1, i);
+			luaL_checktype(L, -1, LUA_TTABLE);
+			lua_geti(L, -1, 1);
+			lua_geti(L, -2, 2);
+			cert = luaL_checkstring(L, -2);
+			key = luaL_checkstring(L, -1);
+			if (i == 1 && !optstring(L, 1, "cert")) {
+				if (tls_config_set_keypair_file(cfg, cert, key) == -1)
+					return fail(L, tls_config_error(cfg));
+			} else if (tls_config_add_keypair_file(cfg, cert, key) == -1)
+				return fail(L, tls_config_error(cfg));
+			lua_pop(L, 3);
+		}
+	}
+	lua_pop(L, 1);
 	if ((s = optstring(L, 1, "alpn")) && tls_config_set_alpn(cfg, s) == -1)
 		return fail(L, tls_config_error(cfg));
 	if (!optbool(L, 1, "verify", 1)) {
