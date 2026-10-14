@@ -156,7 +156,7 @@ local function worker(cfg, listeners)
 	signal.signal(signal.SIGTERM, stop)
 	signal.signal(signal.SIGINT, stop)
 	pcall(function()
-		require("mhttp.sys").setproctitle("worker")
+		require("mhttp.sys").setproctitle("mhttpx: worker")
 	end)
 
 	-- Everything that reads files runs before the privileges go.
@@ -310,7 +310,7 @@ function M.run(path)
 		return nil, by
 	end
 	pcall(function()
-		require("mhttp.sys").setproctitle("master")
+		require("mhttp.sys").setproctitle("mhttpx: master")
 	end)
 
 	local flags = {}

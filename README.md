@@ -52,7 +52,7 @@ local res = client.new():get("https://example.com/")
   static files, CGI, redirects. A root master binds the ports, and a
   worker drops to a user and, on OpenBSD, pledges. SIGHUP reloads the
   config and the certs without dropping connections. See
-  `mhttpx.conf.example`.
+  `mhttpx.conf.example`. `contrib/openbsd/mhttpx` is an rc.d script.
 
 The handlers they use are modules: `mhttp.static`, `mhttp.proxy` and
 `mhttp.cgi`.

@@ -1,0 +1,19 @@
+#!/bin/ksh
+#
+# rc.d script for mhttpx on OpenBSD. Install as /etc/rc.d/mhttpx.
+
+daemon="/usr/local/bin/mhttpx"
+daemon_flags="-f /etc/mhttpx.lua"
+daemon_logger="daemon.info"
+
+. /etc/rc.d/rc.subr
+
+# The master sets this title. Workers have "mhttpx: worker".
+pexp="mhttpx: master"
+rc_bg=YES
+
+rc_configtest() {
+	rc_exec "${daemon} -n ${daemon_flags}"
+}
+
+rc_cmd $1
