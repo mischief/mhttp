@@ -15,6 +15,7 @@
 | `mhttp.client` | requests, keep-alive pool, redirects, http proxy | done |
 | `mhttp.coro` | coroutines that pass scheduler yields through | done |
 | `mhttp.io.posix` | luaposix sockets, blocking or with a wait hook | done |
+| `mhttp.io.poll` | built-in poll(2) scheduler, one task per connection | done |
 | `mhttp.io.event` | the `event` loop (libevent or event_pure) | done |
 | `mhttp.io.luv`, `mhttp.io.los` | luv and lua-os streams | planned |
 | `mhttp.client.curl` | libcurl transport, for TLS and HTTP/2 | planned |
@@ -62,8 +63,14 @@ scheduler works unchanged, and generators nest around I/O at any
 depth. A plain `coroutine.wrap` around code that does I/O takes the
 scheduler's yields itself; use `mhttp.coro.wrap` there.
 
-mhttp itself uses no coroutines. Handlers run in the task that called
-`server:serve`.
+The server and the client use no coroutines. Handlers run in the task
+that called `server:serve`.
+
+`mhttp.io.poll` is a small scheduler for programs that have no event
+loop. A stream wait yields to it with its own tag, and each pass polls
+the fds of all parked tasks. A pass rebuilds the poll set, so its cost
+grows with the number of parked tasks. On loopback it serves as many
+requests per second as event_pure.
 
 Cancel scopes (`scope.lua`) fit above this: a scope deadline becomes
 the deadline argument, and a cancel closes the stream.

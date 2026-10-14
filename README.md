@@ -13,9 +13,16 @@ local posix = require("mhttp.io.posix")
 local srv = server.new({ handler = function(req, res)
 	res:send(200, "hello " .. req.path)
 end })
+
+-- Many connections in one process, with only luaposix:
+local loop = require("mhttp.io.poll").new()
+loop:serve(assert(loop:listen("127.0.0.1", 8080)), srv)
+loop:run()
+
+-- Or one connection at a time, blocking:
 local l = assert(posix.listen("127.0.0.1", 8080))
 while true do
-	srv:serve(l:accept())   -- one connection at a time; use a loop or fork
+	srv:serve(l:accept())
 end
 
 local c = client.new()
@@ -51,7 +58,8 @@ meson test -C build --benchmark -v
 ```
 
 or `luarocks make` and `luarocks test`. `bench/rps.lua` takes a mode:
-`fork` (a process per connection), `event` (one event loop) or
+`fork` (a process per connection), `event` (one event loop), `poll`
+(one `mhttp.io.poll` loop) or
 `reuseport` (several event loops on one port). `fuzz/parse.lua` is an lfuzz
 target. `test/event.lua` and the event benchmarks need the `event`
 library; set `MHTTP_EVENT_LUA` to its lua directory when it is not at

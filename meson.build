@@ -11,7 +11,7 @@ install_subdir('mhttp', install_dir : luadir)
 src = meson.current_source_dir()
 
 foreach t : ['request', 'response', 'smuggle', 'wire', 'split', 'coro', 'url', 'router',
-            'http', 'event']
+            'http', 'event', 'poll']
   test(t, lua, args : [files('test' / t + '.lua')],
        protocol : 'tap', workdir : src, timeout : 120)
 endforeach
@@ -19,7 +19,7 @@ endforeach
 # meson test --benchmark -v
 benchmark('parse', lua, args : [files('bench/parse.lua')],
           workdir : src, timeout : 300)
-foreach m : ['fork', 'event']
+foreach m : ['fork', 'event', 'poll']
   foreach c : ['1', '4', '16']
     benchmark('rps-' + m + '-' + c, lua,
               args : [files('bench/rps.lua'), m, c, get_option('bench_seconds')],

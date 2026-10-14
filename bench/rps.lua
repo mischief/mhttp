@@ -4,6 +4,7 @@
 -- connection. The server is one of:
 --   fork       a process per connection
 --   event      one process, a task per connection under event_pure
+--   poll       one process, a task per connection under mhttp.io.poll
 --   reuseport  several event processes, each with its own SO_REUSEPORT
 --              listener on the same port
 --
@@ -75,6 +76,20 @@ local function event_server()
 	return { pid }, port
 end
 
+local function poll_server()
+	local loop = require("mhttp.io.poll").new()
+	local l = assert(loop:listen("127.0.0.1", 0))
+	local pid = assert(unistd.fork())
+	if pid == 0 then
+		loop:serve(l, srv)
+		loop:run()
+		unistd._exit(0)
+	end
+	local port = l:port()
+	l:close()
+	return { pid }, port
+end
+
 -- The parent binds first to pick the port, and closes its listener once
 -- every worker has its own, so no connection waits in the parent's.
 local function reuseport_server()
@@ -115,6 +130,8 @@ end
 local spids, port
 if MODE == "event" then
 	spids, port = event_server()
+elseif MODE == "poll" then
+	spids, port = poll_server()
 elseif MODE == "reuseport" then
 	spids, port = reuseport_server()
 else

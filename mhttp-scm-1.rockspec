@@ -40,6 +40,7 @@ build = {
     ['mhttp.clock'] = 'mhttp/clock.lua',
     ['mhttp.coro'] = 'mhttp/coro.lua',
     ['mhttp.io.event'] = 'mhttp/io/event.lua',
+    ['mhttp.io.poll'] = 'mhttp/io/poll.lua',
     ['mhttp.io.posix'] = 'mhttp/io/posix.lua',
     ['mhttp.router'] = 'mhttp/router.lua',
     ['mhttp.server'] = 'mhttp/server.lua',
