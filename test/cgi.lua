@@ -24,29 +24,36 @@ prog("echo.cgi", [[printf 'Content-Type: application/octet-stream\n\n'; cat]])
 prog("status.cgi", [[printf 'Status: 404 Nope\nContent-Type: text/plain\n\ngone\n']])
 prog("redirect.cgi", [[printf 'Location: /elsewhere\n\n']])
 prog("bad.cgi", [[printf 'this is not a header\n\nbody\n']])
-prog("big.cgi", [[printf 'Content-Type: text/plain\n\n'; head -c 1048576 /dev/zero | tr '\0' 'x']])
+prog("big.cgi", [[printf 'Content-Type: text/plain\n\n'; dd if=/dev/zero bs=1024 count=1024 2>/dev/null | tr '\0' 'x']])
 prog("slow.cgi", [[sleep 3; printf 'Content-Type: text/plain\n\nlate\n']])
 prog("nohead.cgi", [[exit 0]])
-prog("fds.cgi", [[printf 'Content-Type: text/plain\n\n'; ls /dev/fd | sort -n | tr '\n' ' ']])
+prog("fds.cgi", [[printf 'Content-Type: text/plain\n\n'
+for fd in 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+	if (: >&$fd) 2>/dev/null || (: <&$fd) 2>/dev/null; then printf '%s ' $fd; fi
+done]])
 prog("sub/inner.cgi", [[printf 'Content-Type: text/plain\n\n%s|%s' "$SCRIPT_NAME" "$PATH_INFO"]])
 prog("plain.txt", "not a program", 420)
 
 local loop = mpoll.new()
 local r = router.new()
-r:any("/cgi/*path", cgi.handler({
-	root = dir,
-	prefix = "/cgi",
-	timeout = 1,
-	stream = function(fd)
-		return loop:stream(fd)
-	end,
-	spawn = function(fn)
-		loop:spawn(fn)
-	end,
-	sleep = function(s)
-		loop:sleep(s)
-	end,
-}))
+local function handler(prefix, timeout)
+	return cgi.handler({
+		root = dir,
+		prefix = prefix,
+		timeout = timeout,
+		stream = function(fd)
+			return loop:stream(fd)
+		end,
+		spawn = function(fn)
+			loop:spawn(fn)
+		end,
+		sleep = function(s)
+			loop:sleep(s)
+		end,
+	})
+end
+r:any("/cgi/*path", handler("/cgi", 10))
+r:any("/quick/*path", handler("/quick", 1))
 local l = assert(loop:listen("127.0.0.1", 0))
 loop:serve(l, server.new({ handler = r:handler(), on_error = function(e)
 	io.stderr:write(e, "\n")
@@ -94,7 +101,8 @@ loop:spawn(function()
 	tap.is(req({ path = "/bad.cgi" }).status, 502, "bad header")
 	res = req({ path = "/big.cgi" })
 	tap.is(#res.body, 1 << 20, "1 MiB of output")
-	tap.is(req({ path = "/slow.cgi" }).status, 504, "timeout")
+	res = c:request({ url = base:gsub("/cgi$", "/quick") .. "/slow.cgi" })
+	tap.is(res and res.status, 504, "timeout")
 	tap.is(req({ path = "/nohead.cgi" }).status, 502, "no output")
 	tap.is(req({ path = "/plain.txt" }).status, 404, "not executable")
 	tap.is(req({ path = "/nosuch.cgi" }).status, 404, "missing")
@@ -102,10 +110,7 @@ loop:spawn(function()
 	res = req({ path = "/sub/inner.cgi/x/" })
 	tap.is(res.body, "/cgi/sub/inner.cgi|/x/", "nested program and PATH_INFO")
 	res = req({ path = "/fds.cgi" })
-	tap.ok(res.body:match("^0 1 2 3? ?$"), "the program gets only stdin, stdout, stderr")
-	if not res.body:match("^0 1 2 3? ?$") then
-		tap.diag(res.body)
-	end
+	tap.is(res.body, "", "the program gets only stdin, stdout, stderr")
 	c:close()
 	l:close()
 end)

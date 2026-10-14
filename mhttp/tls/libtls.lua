@@ -11,7 +11,7 @@ chain and the host name in the handshake. A connection owns its fd:
 
 local core = require("mhttp.tls.libtls_core")
 
-local M = { name = "libtls", checks_host = true }
+local M = { name = "libtls" }
 
 -- A config holds the loaded CA, cert and key, so configs are kept by
 -- their options. A server context is kept the same way.

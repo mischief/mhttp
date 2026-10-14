@@ -17,7 +17,7 @@ SSL_CERT_FILE, SSL_CERT_DIR or the first file of `M.ca_files`.
 local M = {}
 
 --- Backends to try, in order, when none is named.
-M.backends = { "mhttp.tls.libtls", "mhttp.tls.luasec" }
+M.backends = { "mhttp.tls.libtls" }
 
 --- CA bundles to look for when no CA option is given.
 M.ca_files = {
@@ -79,53 +79,8 @@ function M.backend(opts)
 		end
 		why[#why + 1] = name
 	end
-	return nil, "no TLS backend; install luasec or libtls (tried " .. table.concat(why, ", ") .. ")"
-end
-
--- Lower case, without a trailing dot.
-local function norm(name)
-	return (name:lower():gsub("%.$", ""))
-end
-
---[[- Tells whether a certificate is for host, as RFC 6125 says.
-
-A wildcard is the whole left label, as in `*.example.com`, and stands
-for exactly one label. It must have two labels to its right. The
-subject common name is not used. An IP address matches only an IP
-address entry.
-
-@tparam table peer `dns` and `ip` lists, from a backend `info().peer`
-@tparam string host
-@treturn boolean
-]]
-function M.match_host(peer, host)
-	if not peer or not host or host == "" then
-		return false
-	end
-	local h = host:match("^%[(.*)%]$") or host
-	if h:find(":", 1, true) or h:find("^%d+%.%d+%.%d+%.%d+$") then
-		for _, ip in ipairs(peer.ip or {}) do
-			if ip:lower() == h:lower() then
-				return true
-			end
-		end
-		return false
-	end
-	h = norm(h)
-	for _, name in ipairs(peer.dns or {}) do
-		name = norm(name)
-		if name == h then
-			return true
-		end
-		local rest = name:match("^%*(%.[^*]+)$")
-		if rest and rest:find("%.[^.]+%.[^.]+$") then
-			local first, tail = h:match("^([^.]+)(%..+)$")
-			if first and tail == rest then
-				return true
-			end
-		end
-	end
-	return false
+	return nil, "no TLS backend: build mhttp where libtls is installed (OpenBSD base, "
+		.. "or libretls on Linux); tried " .. table.concat(why, ", ")
 end
 
 local Stream = {}
@@ -160,19 +115,10 @@ function Stream:handshake(deadline)
 	local info = self.conn:info()
 	local cfg = self.cfg
 	if cfg.mode == "client" and cfg.verify then
-		-- A backend that checks in the handshake fails there instead.
-		if info.verified == false then
-			self.failed = "tls: certificate: " .. tostring(info.verify_error or "not verified")
-		elseif not (self.backend.checks_host and cfg.host == cfg.sni) then
-			local named
-			if self.conn.contains_name then
-				named = self.conn:contains_name(cfg.host)
-			else
-				named = M.match_host(info.peer, cfg.host)
-			end
-			if not named then
-				self.failed = "tls: certificate is not for " .. tostring(cfg.host)
-			end
+		-- The backend checked the chain, and the name when it is the
+		-- SNI name. A host other than the SNI name is checked here.
+		if cfg.host ~= cfg.sni and not self.conn:contains_name(cfg.host) then
+			self.failed = "tls: certificate is not for " .. tostring(cfg.host)
 		end
 	end
 	if not self.failed and cfg.verify_cb then

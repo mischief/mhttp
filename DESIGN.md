@@ -15,7 +15,7 @@
 | `mhttp.client` | requests, keep-alive pool, redirects, http proxy | done |
 | `mhttp.coro` | coroutines that pass scheduler yields through | done |
 | `mhttp.io.posix` | luaposix sockets, blocking or with a wait hook | done |
-| `mhttp.tls` | TLS streams; libtls and luasec backends | done |
+| `mhttp.tls` | TLS streams over libtls | done |
 | `mhttp.static` | files: conditional requests, ranges, listings | done |
 | `mhttp.proxy` | reverse proxy: streaming, X-Forwarded-*, upgrades | done |
 | `mhttp.cgi` | CGI/1.1 programs | done |
@@ -125,7 +125,7 @@ client.new({ tls = { cert = "me.pem", key = "me.key" } })  -- mutual TLS
 Options:
 
 - `backend`: a module name or table. Default `mhttp.tls.default`, else
-  the first of `mhttp.tls.backends` that loads: libtls, then luasec.
+  the first of `mhttp.tls.backends` that loads, which is libtls.
 - `verify` (true): check the chain and, on a client, the name.
 - `host`: the name to check, default the connect host. `sni`: the name
   to send, default the host unless it is an address.
@@ -142,24 +142,23 @@ A client runs the handshake in `connect`. A server runs it on the first
 read, with that read's deadline, so a client that stalls in the
 handshake does not hold up `accept`. `s:info().tls` has version,
 cipher, alpn, sni and peer (subject, issuer, not_before, not_after,
-pem; with luasec also dns and ip lists). It fills in after the
+pem). It fills in after the
 handshake.
 
-A backend has `new(fd, cfg)` and `checks_host`. Its connection has
-`handshake()`, `read(max)`, `write(buf)`, `info()` and `close()`. The
-first three return nil and "wantread" or "wantwrite" when they would
-block. `close` also closes the fd.
+A backend has `new(fd, cfg)`. Its connection has `handshake()`,
+`read(max)`, `write(buf)`, `info()`, `contains_name(host)` and
+`close()`. The first three return nil and "wantread" or "wantwrite"
+when they would block. The handshake checks the chain, and the name
+when it is the SNI name; `mhttp.tls` calls `contains_name` for a `host`
+option that differs. `close` also closes the fd.
 
-- `mhttp.tls.libtls`: libtls from OpenBSD base, or libretls on Linux.
-  The C core is the `mhttp-libtls` rock, or the meson build. libtls
-  checks the chain and the name in the handshake.
-- `mhttp.tls.luasec`: luasec over OpenSSL or LibreSSL, on every system
-  luasec builds on. luasec does not check names, so `mhttp.tls` does,
-  per RFC 6125: subjectAltName only, the wildcard as a whole left
-  label.
+`mhttp.tls.libtls` is the one backend: libtls from OpenBSD base, or
+libretls on Linux (Debian `libtls-dev`, Gentoo `dev-libs/libretls`).
+The rock and the meson build make its C core only where libtls links;
+without it, a `tls` option gives an error. The contract stays, so
+another backend can come back.
 
-Neither backend reads the macOS keychain or the Windows certificate
-store. Give a CA file there.
+libtls does not read the macOS keychain. Give a CA file there.
 
 ## Proxy plan
 

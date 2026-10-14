@@ -1,8 +1,8 @@
 -- SPDX-License-Identifier: ISC
--- TLS with each backend that loads: a local CA, server and client
--- certificates, mutual TLS, and both backends against each other. Needs
--- the openssl command to make the certificates. MHTTP_CPATH adds a
--- directory to package.cpath, for a libtls core built outside luarocks.
+-- TLS with libtls: a local CA, server and client certificates, mutual
+-- TLS, SNI and pinning. Needs the openssl command to make the
+-- certificates. MHTTP_CPATH adds a directory to package.cpath, for C
+-- modules built outside luarocks.
 package.path = "./?.lua;./?/init.lua;./test/?.lua;" .. package.path
 if os.getenv("MHTTP_CPATH") then
 	package.cpath = os.getenv("MHTTP_CPATH") .. "/?.so;" .. package.cpath
@@ -14,23 +14,6 @@ local mpoll = require("mhttp.io.poll")
 local server = require("mhttp.server")
 local client = require("mhttp.client")
 local clock = require("mhttp.clock")
-
--- Names, without a backend.
-do
-	local peer = { dns = { "example.com", "*.wild.example.com", "*.com", "f*.part.example.com" },
-		ip = { "127.0.0.1", "::1" } }
-	local cases = {
-		{ "example.com", true }, { "EXAMPLE.com.", true }, { "www.example.com", false },
-		{ "a.wild.example.com", true }, { "a.b.wild.example.com", false },
-		{ "wild.example.com", false }, { "x.com", false }, { "foo.part.example.com", false },
-		{ "127.0.0.1", true }, { "[::1]", true }, { "10.0.0.1", false },
-	}
-	for _, c in ipairs(cases) do
-		tap.is(tls.match_host(peer, c[1]), c[2], "match_host " .. c[1])
-	end
-	tap.is(tls.match_host({ dns = { "127.0.0.1" } }, "127.0.0.1"), false,
-		"an address does not match a dns name")
-end
 
 local backends = {}
 for _, name in ipairs(tls.backends) do

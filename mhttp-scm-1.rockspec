@@ -22,43 +22,25 @@ Framing is strict against request smuggling and response splitting.
 
 supported_platforms = { 'unix' }
 
+-- The parser, the serializer, the router and mhttp.coro need only Lua.
+-- The sockets, the loops, the handlers and the programs need luaposix.
 dependencies = {
   'lua >= 5.4',
-}
-
--- luaposix is needed only by mhttp.io.posix, mhttp.io.event and the
--- tests.
-test_dependencies = {
   'luaposix',
 }
 
+-- The Makefile installs every Lua module under mhttp/ and mhttpx/, and
+-- builds mhttp.sys, and the libtls backend where libtls links.
 build = {
-  type = 'builtin',
-  modules = {
-    ['mhttp'] = 'mhttp/init.lua',
-    ['mhttp.client'] = 'mhttp/client.lua',
-    ['mhttp.clock'] = 'mhttp/clock.lua',
-    ['mhttp.coro'] = 'mhttp/coro.lua',
-    ['mhttp.io.event'] = 'mhttp/io/event.lua',
-    ['mhttp.io.poll'] = 'mhttp/io/poll.lua',
-    ['mhttp.io.posix'] = 'mhttp/io/posix.lua',
-    ['mhttp.router'] = 'mhttp/router.lua',
-    ['mhttp.server'] = 'mhttp/server.lua',
-    ['mhttp.url'] = 'mhttp/url.lua',
-    ['mhttp.headers'] = 'mhttp/headers.lua',
-    ['mhttp.parse'] = 'mhttp/parse.lua',
-    ['mhttp.status'] = 'mhttp/status.lua',
-    ['mhttp.syntax'] = 'mhttp/syntax.lua',
-    ['mhttp.date'] = 'mhttp/date.lua',
-    ['mhttp.static'] = 'mhttp/static.lua',
-    ['mhttp.proxy'] = 'mhttp/proxy.lua',
-    ['mhttp.cgi'] = 'mhttp/cgi.lua',
-    ['mhttpx.rules'] = 'mhttpx/rules.lua',
-    ['mhttpx.daemon'] = 'mhttpx/daemon.lua',
-    ['mhttp.tls'] = 'mhttp/tls.lua',
-    ['mhttp.tls.libtls'] = 'mhttp/tls/libtls.lua',
-    ['mhttp.tls.luasec'] = 'mhttp/tls/luasec.lua',
-    ['mhttp.wire'] = 'mhttp/wire.lua',
+  type = 'make',
+  build_variables = {
+    CFLAGS = '$(CFLAGS)',
+    LIBFLAG = '$(LIBFLAG)',
+    LUA_INCDIR = '$(LUA_INCDIR)',
+  },
+  install_variables = {
+    LUADIR = '$(LUADIR)',
+    LIBDIR = '$(LIBDIR)',
   },
   install = {
     bin = {

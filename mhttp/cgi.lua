@@ -182,6 +182,8 @@ end
  - `sleep(sec)`: waits without blocking the loop, such as `loop.sleep`
  - `timeout`: seconds with no output before the program is killed (60)
  - `max_head`: bytes of program header (16 KiB)
+ - `max_hold`: bytes of output to hold while the request body still
+   comes in (8 MiB)
 @treturn function `handler(req, res)`
 ]]
 function M.handler(opts)
@@ -190,6 +192,7 @@ function M.handler(opts)
 	end
 	local timeout = opts.timeout or 60
 	local max_head = opts.max_head or 16 * 1024
+	local max_hold = opts.max_hold or 8 * 1024 * 1024
 
 	local function reap(pid)
 		for _ = 1, 40 do
@@ -291,23 +294,42 @@ function M.handler(opts)
 		end
 		status = status or (has_location and 302 or 200)
 		res.reason = reason ~= "" and reason or nil
+		-- Many clients read the response only after they sent the whole
+		-- body. Hold the output until the body is in, so that neither
+		-- side waits for the other.
+		local held, size, ended = { buf }, #buf, false
+		while not fed and size <= max_hold do
+			local s, err = stdout:read(65536, clock.after(timeout))
+			if not s then
+				if err ~= "eof" then
+					stdout:close()
+					reap(pid)
+					return res:send(504, "the program timed out\n")
+				end
+				ended = true
+				break
+			end
+			held[#held + 1] = s
+			size = size + #s
+		end
 		local ok = res:start(status, fields)
 		if not ok then
 			stdout:close()
 			reap(pid)
 			return res:send(502, "the program sent bad fields\n")
 		end
-		if buf ~= "" and not res:write(buf) then
+		local first = table.concat(held)
+		if first ~= "" and not res:write(first) then
 			stdout:close()
 			reap(pid)
 			return res:abort()
 		end
-		while true do
+		while not ended do
 			local s, err = stdout:read(65536, clock.after(timeout))
 			if not s then
-				stdout:close()
-				reap(pid)
 				if err ~= "eof" then
+					stdout:close()
+					reap(pid)
 					return res:abort()
 				end
 				break
@@ -318,6 +340,8 @@ function M.handler(opts)
 				return res:abort()
 			end
 		end
+		stdout:close()
+		reap(pid)
 		-- The body task still reads the request. Close the connection,
 		-- so the next request does not race it.
 		if not fed then
