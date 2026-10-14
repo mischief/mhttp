@@ -49,6 +49,9 @@ build = {
     ['mhttp.parse'] = 'mhttp/parse.lua',
     ['mhttp.status'] = 'mhttp/status.lua',
     ['mhttp.syntax'] = 'mhttp/syntax.lua',
+    ['mhttp.tls'] = 'mhttp/tls.lua',
+    ['mhttp.tls.libtls'] = 'mhttp/tls/libtls.lua',
+    ['mhttp.tls.luasec'] = 'mhttp/tls/luasec.lua',
     ['mhttp.wire'] = 'mhttp/wire.lua',
   },
 }

@@ -15,10 +15,11 @@
 | `mhttp.client` | requests, keep-alive pool, redirects, http proxy | done |
 | `mhttp.coro` | coroutines that pass scheduler yields through | done |
 | `mhttp.io.posix` | luaposix sockets, blocking or with a wait hook | done |
+| `mhttp.tls` | TLS streams; libtls and luasec backends | done |
 | `mhttp.io.poll` | built-in poll(2) scheduler, one task per connection | done |
 | `mhttp.io.event` | the `event` loop (libevent or event_pure) | done |
 | `mhttp.io.luv`, `mhttp.io.los` | luv and lua-os streams | planned |
-| `mhttp.client.curl` | libcurl transport, for TLS and HTTP/2 | planned |
+| `mhttp.client.curl` | libcurl transport, for HTTP/2 | planned |
 | `mhttp.cookie` | RFC 6265bis parse, serialize, jar | planned |
 | `mhttp.proxy` | forward and reverse proxy helpers | planned |
 
@@ -102,24 +103,57 @@ strings or `{family, addr, port}` tables. The client passes its
 library. Without a resolver, `mhttp.io.posix` calls getaddrinfo, which
 blocks.
 
-## TLS hooks
+## TLS
 
-TLS is part of the stream, not of mhttp. A connector creates streams:
+TLS is a stream layer. `mhttp.tls` wraps a non-blocking stream that has
+an fd and a wait hook. When the backend wants to read or write, the
+stream calls the wait hook, so TLS works under every loop. The server
+and the client do not know about it.
 
 ```lua
-connect{ host, port, tls = {
-  sni = "example.com",
-  alpn = { "http/1.1" },
-  ca = "/etc/ssl/certs", verify = true,
-  verify_cb = function(chain, host) return ok, why end,
-  cert = "client.pem", key = "client.key",   -- mutual TLS
-} }
+posix.connect(host, 443, { tls = { ca = "ca.pem" } })      -- client
+loop:listen("::", 443, { tls = { cert = "c.pem", key = "k.pem" } })
+client.new({ tls = { cert = "me.pem", key = "me.key" } })  -- mutual TLS
 ```
 
-The server side takes `cert`, `key`, `client_auth` ("none",
-"optional", "require") and the same `verify_cb`. `s:info().tls` holds
-the version, cipher, ALPN result and peer chain, so a handler can read
-the client certificate. The curl transport maps these to curl options.
+Options:
+
+- `backend`: a module name or table. Default `mhttp.tls.default`, else
+  the first of `mhttp.tls.backends` that loads: libtls, then luasec.
+- `verify` (true): check the chain and, on a client, the name.
+- `host`: the name to check, default the connect host. `sni`: the name
+  to send, default the host unless it is an address.
+- `ca`, `ca_dir`: CA file or hashed directory. A verifying client with
+  neither uses SSL_CERT_FILE, SSL_CERT_DIR or the first of
+  `mhttp.tls.ca_files` that exists.
+- `cert`, `key`: this side's PEM files.
+- `client_auth` (server): "none", "optional" or "require".
+- `alpn`: protocol names.
+- `verify_cb(info, host)`: runs after the other checks; returns true,
+  or nil and the reason. Use it to pin a key.
+
+A client runs the handshake in `connect`. A server runs it on the first
+read, with that read's deadline, so a client that stalls in the
+handshake does not hold up `accept`. `s:info().tls` has version,
+cipher, alpn, sni and peer (subject, issuer, not_before, not_after,
+pem; with luasec also dns and ip lists). It fills in after the
+handshake.
+
+A backend has `new(fd, cfg)` and `checks_host`. Its connection has
+`handshake()`, `read(max)`, `write(buf)`, `info()` and `close()`. The
+first three return nil and "wantread" or "wantwrite" when they would
+block. `close` also closes the fd.
+
+- `mhttp.tls.libtls`: libtls from OpenBSD base, or libretls on Linux.
+  The C core is the `mhttp-libtls` rock, or the meson build. libtls
+  checks the chain and the name in the handshake.
+- `mhttp.tls.luasec`: luasec over OpenSSL or LibreSSL, on every system
+  luasec builds on. luasec does not check names, so `mhttp.tls` does,
+  per RFC 6125: subjectAltName only, the wildcard as a whole left
+  label.
+
+Neither backend reads the macOS keychain or the Windows certificate
+store. Give a CA file there.
 
 ## Proxy plan
 

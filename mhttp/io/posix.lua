@@ -8,7 +8,7 @@ on that one fd. A scheduler passes its own wait, which parks the task;
 see `mhttp.io.event`.
 
 Name lookup uses a `resolve` hook when one is given, else getaddrinfo,
-which blocks. Plain TCP only: a `tls` option is an error here.
+which blocks. A `tls` option wraps the streams with `mhttp.tls`.
 
 @module mhttp.io.posix
 ]]
@@ -230,15 +230,13 @@ It tries each address in order until one connects.
 @tparam[opt] table opts `deadline`, `wait`, `on_close`, and
 `resolve(host, port, deadline)`, which returns a list of address strings
 or of `{family, addr, port}`, or nil and the reason. A literal address
-skips the resolver. `tls` is an error.
+skips the resolver. `tls`: options for `mhttp.tls.client`; host and sni
+default to host.
 @treturn[1] Stream
 @return[2] nil and the reason
 ]]
 function M.connect(host, port, opts)
 	opts = opts or {}
-	if opts.tls then
-		return nil, "mhttp.io.posix has no TLS"
-	end
 	local addrs
 	local family = M.literal(host)
 	if family then
@@ -269,7 +267,9 @@ function M.connect(host, port, opts)
 			if not ok and en == EINPROGRESS then
 				ok, cerr = finish_connect(fd, s, opts.deadline)
 			end
-			if ok then
+			if ok and opts.tls then
+				return M.start_tls(s, host, opts.tls, opts.deadline)
+			elseif ok then
 				return s
 			end
 			last = cerr
@@ -277,6 +277,19 @@ function M.connect(host, port, opts)
 		end
 	end
 	return nil, ("connect %s:%s: %s"):format(host, port, tostring(last))
+end
+
+--- Runs a TLS client handshake on s. On an error s is closed.
+function M.start_tls(s, host, tls, deadline)
+	local t = {}
+	for k, v in pairs(tls) do
+		t[k] = v
+	end
+	t.host = t.host or host
+	if t.sni == nil and not M.literal(host) then
+		t.sni = host
+	end
+	return require("mhttp.tls").client(s, t, deadline)
 end
 
 local Listener = {}
@@ -287,8 +300,9 @@ Listener.__index = Listener
 @tparam int port
 @tparam[opt] table opts `backlog`; `reuseport` to set SO_REUSEPORT, so
 that several processes can each listen on the port and the kernel
-spreads connections between them; and `wait` and `on_close` for the
-listener and for the streams it accepts
+spreads connections between them; `tls`, options for
+`mhttp.tls.server`; and `wait` and `on_close` for the listener and for
+the streams it accepts
 @treturn[1] Listener
 @return[2] nil and the reason
 ]]
@@ -342,7 +356,15 @@ function Listener:accept(deadline)
 		local fd, addr, en = socket.accept(self.fd)
 		if fd then
 			socket.setsockopt(fd, socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-			return M.stream(fd, self.opts), addr
+			local s = M.stream(fd, self.opts)
+			if self.opts.tls then
+				local terr
+				s, terr = require("mhttp.tls").server(s, self.opts.tls)
+				if not s then
+					return nil, terr
+				end
+			end
+			return s, addr
 		elseif wouldblock(en) then
 			local ok, err = self:wait("r", deadline)
 			if not ok then

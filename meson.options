@@ -2,3 +2,5 @@ option('lua_version', type : 'string', value : '5.4',
        description : 'Lua version to install for and test against')
 option('bench_seconds', type : 'string', value : '3',
        description : 'How long each rps benchmark runs')
+option('libtls', type : 'feature', value : 'auto',
+       description : 'build the C core of the libtls TLS backend')

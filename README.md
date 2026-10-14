@@ -29,6 +29,15 @@ local c = client.new()
 local res, err = c:get("http://127.0.0.1:8080/x")
 ```
 
+https and TLS servers need a backend: libtls (the `mhttp-libtls` rock,
+or `meson setup`, with libtls from OpenBSD base or libretls) or luasec.
+See DESIGN.md.
+
+```lua
+local l = assert(loop:listen("::", 443, { tls = { cert = "cert.pem", key = "key.pem" } }))
+local res = client.new():get("https://example.com/")
+```
+
 The parser on its own:
 
 ```lua

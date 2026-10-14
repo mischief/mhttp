@@ -239,7 +239,7 @@ function Client:once(req, u, deadline)
 		for k, v in pairs(self.tls or {}) do
 			tls[k] = v
 		end
-		tls.sni = tls.sni or u.host
+		tls.host = tls.host or u.host
 	end
 	if self.proxy and scheme == "http" then
 		host, port = self.proxy.host, url.port(self.proxy)
