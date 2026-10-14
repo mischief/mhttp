@@ -16,12 +16,18 @@
 | `mhttp.coro` | coroutines that pass scheduler yields through | done |
 | `mhttp.io.posix` | luaposix sockets, blocking or with a wait hook | done |
 | `mhttp.tls` | TLS streams; libtls and luasec backends | done |
+| `mhttp.static` | files: conditional requests, ranges, listings | done |
+| `mhttp.proxy` | reverse proxy: streaming, X-Forwarded-*, upgrades | done |
+| `mhttp.cgi` | CGI/1.1 programs | done |
+| `mhttp.date` | HTTP dates | done |
+| `mhttp.sys` | setgroups, chroot, pledge, unveil (C) | done |
+| `mhttpx.*` | the mhttpx program: rules, master and worker | done |
 | `mhttp.io.poll` | built-in poll(2) scheduler, one task per connection | done |
 | `mhttp.io.event` | the `event` loop (libevent or event_pure) | done |
 | `mhttp.io.luv`, `mhttp.io.los` | luv and lua-os streams | planned |
 | `mhttp.client.curl` | libcurl transport, for HTTP/2 | planned |
 | `mhttp.cookie` | RFC 6265bis parse, serialize, jar | planned |
-| `mhttp.proxy` | forward and reverse proxy helpers | planned |
+| forward proxy | CONNECT and absolute-form requests | planned |
 
 The parser and the serializer own all framing decisions. No other
 module reads Content-Length or Transfer-Encoding.

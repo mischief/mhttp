@@ -1,0 +1,101 @@
+#!/usr/bin/env lua5.4
+-- SPDX-License-Identifier: ISC
+-- mhttpd: serves a directory, and optionally CGI programs, at once.
+
+local mpoll = require("mhttp.io.poll")
+local server = require("mhttp.server")
+local router = require("mhttp.router")
+local static = require("mhttp.static")
+local clock = require("mhttp.clock")
+
+local function usage()
+	io.stderr:write([[
+usage: mhttpd [-lq] [-a addr] [-p port] [-c dir] [-C prefix]
+              [--cert file --key file] [dir]
+  -a addr     listen address (127.0.0.1)
+  -p port     port (8000)
+  -l          list directories without an index file
+  -c dir      run CGI programs from dir
+  -C prefix   path prefix of the CGI programs (/cgi-bin)
+  -q          no access log
+  --cert, --key   serve TLS with this certificate and key
+]])
+	os.exit(64)
+end
+
+local o = { addr = "127.0.0.1", port = 8000, prefix = "/cgi-bin", dir = "." }
+local i = 1
+while i <= #arg do
+	local a = arg[i]
+	local function val()
+		i = i + 1
+		return arg[i] or usage()
+	end
+	if a == "-a" then
+		o.addr = val()
+	elseif a == "-p" then
+		o.port = tonumber(val()) or usage()
+	elseif a == "-l" then
+		o.list = true
+	elseif a == "-c" then
+		o.cgi = val()
+	elseif a == "-C" then
+		o.prefix = val():gsub("/+$", "")
+	elseif a == "-q" then
+		o.quiet = true
+	elseif a == "--cert" then
+		o.cert = val()
+	elseif a == "--key" then
+		o.key = val()
+	elseif a:sub(1, 1) == "-" then
+		usage()
+	else
+		o.dir = a
+	end
+	i = i + 1
+end
+
+local loop = mpoll.new()
+local r = router.new()
+if o.cgi then
+	r:any(o.prefix .. "/*path", require("mhttp.cgi").handler({
+		root = o.cgi,
+		prefix = o.prefix,
+		stream = function(fd)
+			return loop:stream(fd)
+		end,
+		spawn = function(fn)
+			loop:spawn(fn)
+		end,
+		sleep = function(s)
+			loop:sleep(s)
+		end,
+	}))
+end
+local files = static.handler(o.dir, { list = o.list })
+r:get("/*path", files)
+
+local tls
+if o.cert or o.key then
+	tls = { cert = o.cert or usage(), key = o.key or usage() }
+end
+local l, err = loop:listen(o.addr, o.port, { tls = tls })
+if not l then
+	io.stderr:write("mhttpd: ", tostring(err), "\n")
+	os.exit(1)
+end
+local handler = r:handler()
+local srv = server.new({
+	handler = function(req, res)
+		local t0 = clock.now()
+		handler(req, res)
+		if not o.quiet then
+			io.stderr:write(("%s %s %s %d %.3f\n"):format(req.peer and req.peer.addr or "-",
+				req.method, req.target, res.status or 0, clock.now() - t0))
+		end
+	end,
+})
+loop:serve(l, srv)
+io.stderr:write(("mhttpd: serving %s on %s://%s:%d/\n"):format(o.dir, tls and "https" or "http",
+	o.addr:find(":") and "[" .. o.addr .. "]" or o.addr, l:port()))
+loop:run()

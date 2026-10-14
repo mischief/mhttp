@@ -1,0 +1,41 @@
+#!/usr/bin/env lua5.4
+-- SPDX-License-Identifier: ISC
+-- mhttpx: a reverse proxy and file server configured by a Lua file.
+
+local daemon = require("mhttpx.daemon")
+
+local function usage()
+	io.stderr:write("usage: mhttpx [-n] [-f config]\n")
+	os.exit(64)
+end
+
+local path, check = "/etc/mhttpx.lua", false
+local i = 1
+while i <= #arg do
+	local a = arg[i]
+	if a == "-f" then
+		path = arg[i + 1] or usage()
+		i = i + 1
+	elseif a == "-n" then
+		check = true
+	else
+		usage()
+	end
+	i = i + 1
+end
+
+if check then
+	local cfg, err = daemon.load(path)
+	if not cfg then
+		io.stderr:write("mhttpx: ", err, "\n")
+		os.exit(1)
+	end
+	print("configuration OK")
+	os.exit(0)
+end
+
+local ok, err = daemon.run(path)
+if not ok then
+	io.stderr:write("mhttpx: ", tostring(err), "\n")
+	os.exit(1)
+end

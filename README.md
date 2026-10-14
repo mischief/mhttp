@@ -38,6 +38,21 @@ local l = assert(loop:listen("::", 443, { tls = { cert = "cert.pem", key = "key.
 local res = client.new():get("https://example.com/")
 ```
 
+## Programs
+
+- `mhttpd [-l] [-c cgi-dir] [dir]` serves a directory, and CGI programs,
+  at once. `mhttpd -h` lists the options.
+- `mhttpx -f config` is a reverse proxy and file server configured by a
+  Lua file, in the place of relayd or nginx: TLS with a cert per SNI
+  name, rules by host and path, header rules, proxy with WebSockets,
+  static files, CGI, redirects. A root master binds the ports, and a
+  worker drops to a user and, on OpenBSD, pledges. SIGHUP reloads the
+  config and the certs without dropping connections. See
+  `mhttpx.conf.example`.
+
+The handlers they use are modules: `mhttp.static`, `mhttp.proxy` and
+`mhttp.cgi`.
+
 The parser on its own:
 
 ```lua

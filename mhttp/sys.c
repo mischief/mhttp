@@ -34,6 +34,7 @@ result(lua_State *L, int rv)
 	return 2;
 }
 
+#if !defined(__OpenBSD__)
 static int
 unsupported(lua_State *L)
 {
@@ -41,6 +42,7 @@ unsupported(lua_State *L)
 	lua_pushliteral(L, "unsupported");
 	return 2;
 }
+#endif
 
 /* setgroups({gid, ...}) */
 static int

@@ -53,10 +53,18 @@ build = {
     ['mhttp.static'] = 'mhttp/static.lua',
     ['mhttp.proxy'] = 'mhttp/proxy.lua',
     ['mhttp.cgi'] = 'mhttp/cgi.lua',
+    ['mhttpx.rules'] = 'mhttpx/rules.lua',
+    ['mhttpx.daemon'] = 'mhttpx/daemon.lua',
     ['mhttp.tls'] = 'mhttp/tls.lua',
     ['mhttp.tls.libtls'] = 'mhttp/tls/libtls.lua',
     ['mhttp.tls.luasec'] = 'mhttp/tls/luasec.lua',
     ['mhttp.wire'] = 'mhttp/wire.lua',
+  },
+  install = {
+    bin = {
+      mhttpx = 'bin/mhttpx',
+      mhttpd = 'bin/mhttpd',
+    },
   },
 }
 

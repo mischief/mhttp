@@ -1,0 +1,53 @@
+-- mhttpx configuration. The file is Lua and returns a table.
+-- Check it with: mhttpx -n -f /etc/mhttpx.lua
+-- Reload it with SIGHUP; the worker reads the TLS files again then.
+
+local tls = {
+	-- Several certs: each connection gets the one its SNI name is in.
+	certs = {
+		{ "/etc/ssl/example.org.crt", "/etc/ssl/private/example.org.key" },
+		{ "/etc/ssl/mirror.example.org.crt", "/etc/ssl/private/mirror.example.org.key" },
+	},
+}
+
+local app = "http://10.0.0.2:8080"
+local site = { "example.org", "www.example.org" }
+
+return {
+	user = "_mhttpx",          -- the worker drops to this user
+	access_log = "/var/log/mhttpx.log",  -- or "-" for stdout
+	drain = 30,                -- seconds an old worker may finish requests
+	-- pledge = false,         -- OpenBSD: no pledge or unveil
+
+	servers = {
+		{
+			listen = { "0.0.0.0:443", "[::]:443" },
+			tls = tls,
+			proto = "https",   -- X-Forwarded-Proto
+			rules = {
+				-- Header rules change fields and go on to the next rule.
+				{ path = "/app/*", response_headers = {
+					["Cross-Origin-Opener-Policy"] = "same-origin",
+					["Cross-Origin-Embedder-Policy"] = "require-corp",
+				} },
+				{ path = "*.wasm", response_headers = { ["Content-Type"] = "application/wasm" } },
+
+				-- The first rule with an action answers.
+				{ host = "mirror.example.org", static = { root = "/var/www/mirror", list = true } },
+				{ host = site, path = "/cgi-bin/*", strip = "/cgi-bin", cgi = "/var/www/cgi-bin" },
+				{ host = site, path = "/api/*", proxy = app },
+				{ host = site, static = "/var/www/htdocs" },
+				{ status = 421, body = "unknown host\n" },
+			},
+		},
+		{
+			listen = { "0.0.0.0:80", "[::]:80" },
+			proto = "http",
+			rules = {
+				{ path = "/.well-known/acme-challenge/*", strip = "/.well-known/acme-challenge",
+				  static = "/var/www/acme" },
+				{ redirect = "https://{host}{target}" },
+			},
+		},
+	},
+}
