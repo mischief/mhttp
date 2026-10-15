@@ -273,10 +273,13 @@ ctx_write(lua_State *L)
 	const char *s = luaL_checklstring(L, 2, &len);
 	ssize_t n = tls_write(c->tls, s, len);
 
-	if (n >= 0) {
+	if (n > 0) {
 		lua_pushinteger(L, n);
 		return 1;
 	}
+	/* 0 means the peer closed the connection, not a short write. */
+	if (n == 0)
+		return fail(L, "eof");
 	return want(L, c, n);
 }
 

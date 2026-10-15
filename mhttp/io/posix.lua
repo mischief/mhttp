@@ -134,7 +134,10 @@ function Stream:write(buf, deadline)
 			return nil, "closed"
 		end
 		local n, err, en = unistd.write(self.fd, off == 1 and buf or buf:sub(off))
-		if n then
+		if n == 0 then
+			-- A write that makes no progress would loop for ever.
+			return nil, "eof"
+		elseif n then
 			off = off + n
 		elseif wouldblock(en) then
 			local ok, werr = self:wait("w", deadline)

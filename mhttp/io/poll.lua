@@ -35,7 +35,9 @@ Loop.__index = Loop
 
 --- Makes a loop.
 -- @tparam[opt] table opts `on_error(err, task)` for a task that fails
--- (default: write the traceback to stderr)
+-- (default: write the traceback to stderr); `max_run`, seconds a task
+-- may run without a yield before it fails, so that one stuck task does
+-- not stop the others (none)
 -- @treturn Loop
 function M.new(opts)
 	opts = opts or {}
@@ -43,6 +45,7 @@ function M.new(opts)
 		ready = {},
 		parked = {},
 		count = 0,
+		max_run = opts.max_run,
 		on_error = opts.on_error or function(err)
 			io.stderr:write("mhttp.io.poll: ", tostring(err), "\n")
 		end,
@@ -131,11 +134,28 @@ function Loop:closing(fd)
 	end
 end
 
+-- The count hook of max_run. It raises an error in a task that has run
+-- too long since its resume.
+local function watchdog(loop)
+	return function()
+		if loop.since and clock.now() - loop.since > loop.max_run then
+			loop.since = nil
+			error(("task ran %g seconds without a yield"):format(loop.max_run), 2)
+		end
+	end
+end
+
 -- Resumes one task and parks it again when it yields.
 function Loop:step(r)
 	local co = r[1]
 	self.current = co
+	if self.max_run then
+		self.watchdog = self.watchdog or watchdog(self)
+		self.since = clock.now()
+		debug.sethook(co, self.watchdog, "", 1000000)
+	end
 	local out = table.pack(coroutine.resume(co, table.unpack(r, 2, r.n)))
+	self.since = nil
 	self.current = nil
 	if not out[1] then
 		self.count = self.count - 1

@@ -127,6 +127,32 @@ do
 	tap.is(loop.count, 0, "max: every task ends")
 end
 
+-- max_run: a task that never yields fails, and the others go on.
+do
+	local errs = {}
+	local loop = mpoll.new({ max_run = 0.3, on_error = function(e)
+		errs[#errs + 1] = e
+	end })
+	local ticks = 0
+	loop:spawn(function()
+		while true do
+			local x = 0
+			for i = 1, 1000 do
+				x = x + i
+			end
+		end
+	end)
+	loop:spawn(function()
+		for _ = 1, 3 do
+			loop:sleep(0.05)
+			ticks = ticks + 1
+		end
+	end)
+	loop:run()
+	tap.ok(errs[1] and errs[1]:find("without a yield", 1, true), "max_run stops a stuck task")
+	tap.is(ticks, 3, "max_run: the other task finishes")
+end
+
 -- A gate limits two listeners together.
 do
 	local loop = mpoll.new()

@@ -172,7 +172,10 @@ function Stream:write(buf, deadline)
 			return nil, "closed"
 		end
 		local n, werr = self.conn:write(off == 1 and buf or buf:sub(off))
-		if n then
+		if n == 0 then
+			-- A write that makes no progress would loop for ever.
+			return nil, "eof"
+		elseif n then
 			off = off + n
 		elseif werr == "wantread" or werr == "wantwrite" then
 			local wok, waiterr = self.raw:wait(werr == "wantread" and "r" or "w", deadline)

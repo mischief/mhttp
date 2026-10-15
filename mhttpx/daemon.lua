@@ -86,7 +86,7 @@ local FIELDS = {}
 for name in ("user access_log log trust_forwarded drain pledge listen certs tls acme default sites "
 	.. "server_name "
 	.. "upstream_tls upstream_idle connect_timeout backlog max_body idle head body write "
-	.. "promises unveil "
+	.. "promises unveil max_run "
 	.. "max_conns https_port"):gmatch("%S+") do
 	FIELDS[name] = true
 end
@@ -411,7 +411,9 @@ local function worker(cfg, listeners)
 		end
 	end
 
-	local loop = mpoll.new({ on_error = function(err)
+	-- A task that runs max_run seconds without a yield fails, with its
+	-- traceback in the log, so one stuck connection cannot stop the rest.
+	local loop = mpoll.new({ max_run = cfg.max_run or 10, on_error = function(err)
 		log("%s", tostring(err))
 	end })
 	local reg = metrics.new()
@@ -692,26 +694,54 @@ function M.run(path)
 	end
 	current = start()
 
+	-- Old workers drain, then get SIGKILL if they still run. A worker
+	-- stuck in a loop never sees SIGTERM.
+	local old = {}
+	local function grace()
+		return clock.after((cfg.drain or 30) + 5)
+	end
+	local function reap()
+		while true do
+			local pid, how, code = wait.wait(-1, wait.WNOHANG)
+			if not pid or pid == 0 then
+				break
+			end
+			log("worker %d %s %s", pid, tostring(how), tostring(code))
+			old[pid] = nil
+			if pid == current then
+				current = nil
+			end
+		end
+	end
+	local function kill_late()
+		for pid, deadline in pairs(old) do
+			if clock.now() >= deadline then
+				log("worker %d did not stop; killing it", pid)
+				signal.kill(pid, signal.SIGKILL)
+				old[pid] = nil
+			end
+		end
+	end
+
 	while true do
 		ppoll.poll({}, 1000)
 		if flags.chld then
 			flags.chld = false
-			while true do
-				local pid, how, code = wait.wait(-1, wait.WNOHANG)
-				if not pid or pid == 0 then
-					break
-				end
-				log("worker %d %s %s", pid, tostring(how), tostring(code))
-				if pid == current then
-					current = nil
-				end
-			end
+			reap()
 		end
+		kill_late()
 		if flags.term then
 			if current then
 				signal.kill(current, signal.SIGTERM)
-				wait.wait(current)
+				old[current] = grace()
+				current = nil
 			end
+			while next(old) do
+				ppoll.poll({}, 250)
+				reap()
+				kill_late()
+			end
+			reap()
 			for _, l in pairs(by) do
 				unbind(l)
 			end
@@ -733,10 +763,11 @@ function M.run(path)
 						unbind(l)
 					end
 					cfg, listeners, by = ncfg, nl, nby
-					local old = current
+					local prev = current
 					current = start()
-					if old then
-						signal.kill(old, signal.SIGTERM)
+					if prev then
+						signal.kill(prev, signal.SIGTERM)
+						old[prev] = grace()
 					end
 					log("reloaded")
 				end

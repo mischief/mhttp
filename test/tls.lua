@@ -201,4 +201,36 @@ with_server(backends[1], nil, function(loop, port)
 end)
 
 os.execute("rm -rf " .. dir)
+-- After the peer closes, a write fails and does not loop.
+do
+	local loop = mpoll.new({ on_error = function() end })
+	local l = assert(loop:listen("127.0.0.1", 0, { tls = { backend = backends[1],
+		cert = f("server.pem"), key = f("server.key") } }))
+	local got = {}
+	loop:spawn(function()
+		local s = assert(l:accept())
+		got.first = s:read(100, clock.after(5))
+		got.eof = select(2, s:read(100, clock.after(5)))
+		for _ = 1, 50 do
+			local ok, err = s:write(("z"):rep(4096), clock.after(5))
+			if not ok then
+				got.werr = err
+				break
+			end
+		end
+		s:close()
+		l:close()
+	end)
+	loop:spawn(function()
+		local c = assert(loop:connect("127.0.0.1", l:port(), { tls = { backend = backends[1],
+			ca = f("ca.pem"), host = "localhost" } }))
+		assert(c:write("x", clock.after(5)))
+		c:close()
+	end)
+	loop:run()
+	tap.is(got.first, "x", "close: data before the close")
+	tap.ok(got.eof, "close: then the read ends: " .. tostring(got.eof))
+	tap.ok(got.werr, "close: a write after the close fails: " .. tostring(got.werr))
+end
+
 tap.done()
