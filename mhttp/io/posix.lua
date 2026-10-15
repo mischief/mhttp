@@ -231,7 +231,8 @@ It tries each address in order until one connects.
 `resolve(host, port, deadline)`, which returns a list of address strings
 or of `{family, addr, port}`, or nil and the reason. A literal address
 skips the resolver. `tls`: options for `mhttp.tls.client`; host and sni
-default to host.
+default to host. `unix`: the path of a unix socket to connect to in place
+of host and port.
 @treturn[1] Stream
 @return[2] nil and the reason
 ]]
@@ -239,7 +240,9 @@ function M.connect(host, port, opts)
 	opts = opts or {}
 	local addrs
 	local family = M.literal(host)
-	if family then
+	if opts.unix then
+		addrs = { { family = socket.AF_UNIX, path = opts.unix } }
+	elseif family then
 		addrs = { { family = family, addr = host, port = port } }
 	elseif opts.resolve then
 		local list, rerr = opts.resolve(host, port, opts.deadline)
@@ -262,7 +265,9 @@ function M.connect(host, port, opts)
 			last = serr
 		else
 			local s = M.stream(fd, opts)
-			socket.setsockopt(fd, socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+			if a.family ~= socket.AF_UNIX then
+				socket.setsockopt(fd, socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+			end
 			local ok, cerr, en = socket.connect(fd, a)
 			if not ok and en == EINPROGRESS then
 				ok, cerr = finish_connect(fd, s, opts.deadline)
@@ -275,6 +280,9 @@ function M.connect(host, port, opts)
 			last = cerr
 			s:close()
 		end
+	end
+	if opts.unix then
+		return nil, ("connect %s: %s"):format(opts.unix, tostring(last))
 	end
 	return nil, ("connect %s:%s: %s"):format(host, port, tostring(last))
 end

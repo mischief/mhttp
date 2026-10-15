@@ -13,6 +13,10 @@ return {
 	access_log = "/var/log/mhttpx.log",  -- or "-" for stdout
 	drain = 10,                -- seconds an old worker may finish requests
 	-- pledge = false,         -- OpenBSD: no pledge or unveil
+	-- The worker pledges and unveils what the actions need. A handler
+	-- that opens files needs more:
+	-- promises = "wpath cpath flock",
+	-- unveil = { ["/var/db/app"] = "rwc" },
 
 	listen = {
 		http = { "0.0.0.0:80", "[::]:80" },
@@ -43,5 +47,14 @@ return {
 		{ host = "mirror.example.org", static = { root = "/var/www/mirror", list = true } },
 		{ host = "*.example.org", status = 404, body = "no such site\n" },
 		{ host = "status.example.org", https = false, proxy = "http://127.0.0.1:8080" },
+		-- http over a unix socket.
+		{ host = "app.example.org", proxy = "unix:/var/www/run/app.sock" },
+		-- A handler(req, res) in the worker. A module name loads the
+		-- module as root; it returns a handler, or a table whose
+		-- new(env) returns one. A slow handler stalls the worker.
+		{ host = "hello.example.org", handler = function(req, res)
+			return res:send(200, "hello from " .. req.path .. "\n")
+		end },
+		{ host = "paste.example.org", handler = "myapp.http" },
 	},
 }

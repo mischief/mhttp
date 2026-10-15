@@ -80,6 +80,35 @@ if up_pid == 0 then
 	end
 end
 
+-- The same upstream on a unix socket.
+local sock = dir .. "/up.sock"
+local unix_pid = assert(unistd.fork())
+if unix_pid == 0 then
+	local socket = require("posix.sys.socket")
+	local fd = assert(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, 0))
+	assert(socket.bind(fd, { family = socket.AF_UNIX, path = sock }))
+	assert(socket.listen(fd, 16))
+	local srv = server.new({ handler = function(req, res)
+		res:send(200, ("unix %s host=%s"):format(req.target, req.headers:get("host") or ""))
+	end })
+	while true do
+		local c = socket.accept(fd)
+		if c then
+			srv:serve(posix.stream(c))
+		end
+	end
+end
+
+-- A handler module, loaded by name.
+put("mhttpx_test_app.lua", [[
+return { new = function(env)
+	return function(req, res)
+		return res:send(200, "module " .. req.path .. " " .. type(env.spawn))
+	end
+end }
+]])
+package.path = dir .. "/?.lua;" .. package.path
+
 local port, sport = free_port(), free_port()
 local conf = dir .. "/mhttpx.lua"
 local function config(note)
@@ -112,10 +141,13 @@ return {
 		{ host = "plain.test", https = false, status = 200, body = "plain" },
 		{ host = "both.test", http = "serve", status = 200, body = "both" },
 		{ host = "note.test", status = 200, body = %q },
+		{ host = "unix.test", proxy = "unix:" .. %q },
+		{ host = "fn.test", handler = function(req, res) return res:send(200, "fn " .. req.path) end },
+		{ host = "mod.test", ["/app/*"] = { handler = "mhttpx_test_app" } },
 	},
 }
 ]]):format(up_port, dir .. "/access.log", port, has_tls and ("%q"):format("127.0.0.1:" .. sport) or "nil",
-		dir .. "/t.crt", dir .. "/t.key", dir .. "/acme", dir .. "/www", note))
+		dir .. "/t.crt", dir .. "/t.key", dir .. "/acme", dir .. "/www", note, sock))
 end
 config("first")
 local cfg, lerr = daemon.load(conf)
@@ -168,6 +200,11 @@ tap.try("mhttpx", function()
 	tap.is(assert(get(S, "x.test", "/")).body, "any test", "wildcard")
 	tap.is(assert(get(S, "nowhere.example", "/")).status, 404, "default")
 	tap.is(assert(get(S, "note.test", "/")).body, "first", "before reload")
+	tap.is(assert(get(S, "unix.test", "/u?v=1")).body, "unix /u?v=1 host=unix.test", "unix socket upstream")
+	tap.is(assert(get(S, "fn.test", "/z")).body, "fn /z", "handler function")
+	tap.is(assert(get(S, "mod.test", "/app/q")).body, "module /app/q function", "handler module")
+	bad([[return { listen = { http = "127.0.0.1:1" }, sites = { { host = "a", handler = "no.such.mod" } } }]],
+		"no module no.such.mod", "missing handler module")
 
 	if has_tls then
 		res = assert(get("http", "files.test", "/a?b=c"))
@@ -220,7 +257,9 @@ tap.ok(done, "SIGTERM stops the master")
 if not done then
 	signal.kill(pid, signal.SIGKILL)
 end
-signal.kill(up_pid, signal.SIGKILL)
-wait.wait(up_pid)
+for _, p in ipairs({ up_pid, unix_pid }) do
+	signal.kill(p, signal.SIGKILL)
+	wait.wait(p)
+end
 os.execute("rm -rf " .. dir)
 tap.done()

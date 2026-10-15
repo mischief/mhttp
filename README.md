@@ -49,8 +49,9 @@ local res = client.new():get("https://example.com/")
 - `mhttpx -f config` is a reverse proxy and file server configured by a
   Lua file, in the place of relayd or nginx. The config lists sites by
   host. In a site, the most specific path pattern answers, so the order
-  of the rules does not matter. Actions are proxy (with WebSockets),
-  static files, CGI, redirects and fixed replies; header changes add up
+  of the rules does not matter. Actions are proxy (with WebSockets,
+  over TCP or a unix socket), static files, CGI, Lua handlers in the
+  worker, redirects and fixed replies; header changes add up
   by path. http redirects to https by itself, and serves ACME
   challenges. TLS picks a cert per SNI name. A root master binds the
   ports, and a worker drops to a user and, on OpenBSD, pledges. SIGHUP

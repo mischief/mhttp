@@ -56,6 +56,7 @@ local KINDS = { "http", "https" }
 local FIELDS = {}
 for name in ("user access_log drain pledge listen certs tls acme default sites server_name "
 	.. "upstream_tls upstream_idle connect_timeout backlog max_body idle head body write "
+	.. "promises unveil "
 	.. "max_conns https_port"):gmatch("%S+") do
 	FIELDS[name] = true
 end
@@ -134,7 +135,7 @@ function M.load(path)
 		cfg.tls = t
 	end
 	-- Compile once now, so a bad site fails here and not in a worker.
-	local cok, cerr = pcall(rules.compile, cfg, M.env(cfg, "https", {}))
+	local cok, cerr = pcall(rules.compile, cfg, M.env(cfg, "https", { check = true }))
 	if not cok then
 		return nil, tostring(cerr)
 	end
@@ -172,23 +173,36 @@ local function drop(user)
 end
 
 -- Restricts the worker on OpenBSD: pledge, and unveil for the files it
--- reads. Elsewhere it does nothing.
+-- uses. cfg.promises and cfg.unveil add to what the actions need.
+-- Elsewhere it does nothing.
 local function restrict(cfg)
 	local ok, sys = pcall(require, "mhttp.sys")
 	if not ok or cfg.pledge == false then
 		return
 	end
-	local promises = "stdio inet rpath dns"
+	local promises = { stdio = true, inet = true, rpath = true, dns = true }
 	local paths = { ["/etc/hosts"] = "r", ["/etc/resolv.conf"] = "r" }
 	rules.actions(cfg, function(a, v)
 		if a == "static" then
 			paths[type(v) == "table" and v.root or v] = "r"
 		elseif a == "cgi" then
-			promises = "stdio inet rpath dns proc exec"
+			promises.proc, promises.exec = true, true
 			local c = type(v) == "table" and v or { root = v }
 			paths[c.root or c.script] = "rx"
+		elseif a == "proxy" then
+			local u = type(v) == "table" and v.url or v
+			if u:find("^unix:") then
+				promises.unix = true
+				paths[u:sub(6)] = "rw"
+			end
 		end
 	end)
+	for p in (cfg.promises or ""):gmatch("%S+") do
+		promises[p] = true
+	end
+	for p, perm in pairs(cfg.unveil or {}) do
+		paths[p] = perm
+	end
 	if sys.unveil("/", "") == nil then
 		return
 	end
@@ -196,7 +210,12 @@ local function restrict(cfg)
 		sys.unveil(p, perm)
 	end
 	assert(sys.unveil())
-	assert(sys.pledge(promises))
+	local list = {}
+	for p in pairs(promises) do
+		list[#list + 1] = p
+	end
+	table.sort(list)
+	assert(sys.pledge(table.concat(list, " ")))
 end
 
 -- Runs one worker on the listeners. It does not return.
@@ -226,6 +245,12 @@ local function worker(cfg, listeners)
 		local p = type(v) == "table" and v or { url = v }
 		if a == "proxy" and (p.url or ""):find("^https://") then
 			assert(tls.prepare(p.tls or cfg.upstream_tls or {}, "client"))
+		end
+	end)
+	-- Handler modules load as root, before unveil hides package.path.
+	rules.actions(cfg, function(a, v)
+		if a == "handler" and type(v) == "string" then
+			require(v)
 		end
 	end)
 	for _, name in ipairs({ "mhttp.static", "mhttp.cgi", "mhttp.proxy", "mhttp.date",
@@ -262,6 +287,10 @@ local function worker(cfg, listeners)
 		stream = function(fd)
 			return loop:stream(fd)
 		end,
+		connect = function(h, p, o)
+			return loop:connect(h, p, o)
+		end,
+		log = log,
 		on_error = function(err, req)
 			log("upstream: %s %s: %s", req.headers:get("host") or "-", req.target,
 				type(err) == "table" and err.message or tostring(err))

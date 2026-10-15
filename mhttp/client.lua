@@ -87,14 +87,14 @@ function Client:close()
 end
 
 -- Takes an idle connection to key, or makes one.
-function Client:conn(key, host, port, tls, deadline)
+function Client:conn(key, host, port, tls, deadline, unix)
 	local list = self.idle[key]
 	if list and #list > 0 then
 		local c = table.remove(list)
 		c.reused = true
 		return c
 	end
-	local s, err = self.connect(host, port, { tls = tls, resolve = self.resolve,
+	local s, err = self.connect(host, port, { tls = tls, resolve = self.resolve, unix = unix,
 		deadline = clock.min(deadline, clock.after(self.connect_timeout)) })
 	if not s then
 		return nil, err
@@ -253,6 +253,9 @@ function Client:once(req, u, deadline)
 		return fail("url", "https through a proxy needs CONNECT, not supported yet")
 	end
 	local key = ("%s://%s:%d"):format(scheme, host, port)
+	if req.unix then
+		key = key .. "@" .. req.unix
+	end
 
 	local h = self.headers:clone()
 	if req.headers then
@@ -281,7 +284,7 @@ function Client:once(req, u, deadline)
 		return fail("url", herr)
 	end
 
-	local c, cerr = self:conn(key, host, port, tls, deadline)
+	local c, cerr = self:conn(key, host, port, tls, deadline, req.unix)
 	if not c then
 		return fail(cerr == "timeout" and "timeout" or "connect", cerr)
 	end
@@ -364,6 +367,8 @@ local REDIRECT = { [301] = true, [302] = true, [303] = true, [307] = true, [308]
  - `sink(piece, res)`: called for each piece instead of keeping a body
  - `max_body`: fail when the body is larger
  - `follow`: redirects to follow (0)
+ - `unix`: the path of a unix socket to connect to; the URL still gives
+   the scheme, the Host field and the target
 @return a `Response`, or nil and an error
 ]]
 function Client:request(req)
@@ -415,6 +420,8 @@ function Client:request(req)
 			h:del("cookie")
 			h:del("proxy-authorization")
 			r2.headers = h
+			-- The socket belongs to the first origin.
+			r2.unix = nil
 		end
 		req, u = r2, nu
 	end

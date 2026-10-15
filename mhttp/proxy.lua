@@ -51,7 +51,8 @@ end
 
 @tparam table opts
  - `upstream`: a base URL such as "http://10.0.0.2:8080", or
-   `fn(req)` that returns one, or nil and a status to answer with
+   "unix:/path/to.sock" for http over a unix socket, or `fn(req)` that
+   returns one, or nil and a status to answer with
  - `client`: an `mhttp.client`; default one with `connect`, `tls`,
    `idle` (60), `connect_timeout` (10) and no whole-request timeout
  - `connect`: a connector for the default client, such as `loop.connect`
@@ -130,7 +131,12 @@ function M.handler(opts)
 			end
 			length = req.length
 		end
+		local unix
+		if base:find("^unix:") then
+			unix, base = base:sub(6), "http://localhost"
+		end
 		local up, err = cl:request({
+			unix = unix,
 			url = base:gsub("/+$", "") .. req.target,
 			method = req.method,
 			headers = h,

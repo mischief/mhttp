@@ -20,10 +20,11 @@ local headers = require("mhttp.headers")
 
 local M = {}
 
-M.ACTIONS = { "proxy", "static", "cgi", "redirect", "status" }
+M.ACTIONS = { "proxy", "static", "cgi", "handler", "redirect", "status" }
 
 local ROUTE = {
-	proxy = true, static = true, cgi = true, redirect = true, status = true, body = true,
+	proxy = true, static = true, cgi = true, handler = true, redirect = true, status = true,
+	body = true,
 	headers = true, request_headers = true, strip = true,
 }
 local SITE = { host = true, http = true, https = true }
@@ -143,11 +144,37 @@ local function expand(tpl, req, host)
 	}))
 end
 
+--[[- Makes the handler of a `handler` action.
+
+The value is a function `handler(req, res)`, or the name of a module.
+The module returns a handler, or a table with `new(env)` that returns
+one. env has `spawn`, `sleep`, `stream`, `connect`, `client` and `log`.
+The worker loads the module before it drops root.
+]]
+function M.handler(h, env)
+	if type(h) == "function" then
+		return h
+	end
+	assert(type(h) == "string", "handler must be a function or a module name")
+	if env.check then
+		assert(package.searchpath(h, package.path) or package.searchpath(h, package.cpath),
+			"no module " .. h)
+		return function() end
+	end
+	local m = require(h)
+	if type(m) == "table" and m.new then
+		m = m.new(env)
+	end
+	assert(type(m) == "function", "module " .. h .. " gives no handler")
+	return m
+end
+
 -- Makes the handler of the action in r, or returns nil.
 local function action(r, env)
 	if r.proxy then
 		local p = type(r.proxy) == "table" and r.proxy or { url = r.proxy }
-		assert(type(p.url) == "string" and p.url:find("^https?://"), "proxy needs an http or https URL")
+		assert(type(p.url) == "string" and (p.url:find("^https?://") or p.url:find("^unix:/")),
+			"proxy needs an http, https or unix:/ URL")
 		local up = p.url:gsub("/+$", "")
 		return proxy.handler({
 			upstream = function()
@@ -170,6 +197,8 @@ local function action(r, env)
 		end
 		o.stream, o.spawn, o.sleep = env.stream, env.spawn, env.sleep
 		return cgi.handler(o)
+	elseif r.handler then
+		return M.handler(r.handler, env)
 	elseif r.redirect then
 		local d = type(r.redirect) == "table" and r.redirect or { to = r.redirect }
 		assert(type(d.to) == "string", "redirect needs a target")
