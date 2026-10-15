@@ -83,7 +83,8 @@ end
 
 local KINDS = { "http", "https", "metrics" }
 local FIELDS = {}
-for name in ("user access_log drain pledge listen certs tls acme default sites server_name "
+for name in ("user access_log log trust_forwarded drain pledge listen certs tls acme default sites "
+	.. "server_name "
 	.. "upstream_tls upstream_idle connect_timeout backlog max_body idle head body write "
 	.. "promises unveil "
 	.. "max_conns https_port"):gmatch("%S+") do
@@ -164,6 +165,18 @@ function M.load(path)
 		end
 		cfg.tls = t
 	end
+	for _, f in ipairs({ "log", "access_log" }) do
+		if cfg[f] ~= nil and not pcall(rules.check_log, cfg[f]) then
+			return nil, f .. ": " .. select(2, pcall(rules.check_log, cfg[f]))
+		end
+	end
+	if type(cfg.access_log) == "boolean" or type(cfg.access_log) == "function" then
+		return nil, "access_log must be \"-\", \"syslog\" or a path"
+	end
+	local tf = cfg.trust_forwarded
+	if tf ~= nil and tf ~= true and tf ~= false and type(tf) ~= "table" then
+		return nil, "trust_forwarded must be true or a list of addresses"
+	end
 	-- Compile once now, so a bad site fails here and not in a worker.
 	local cok, cerr = pcall(rules.compile, cfg, M.env(cfg, "https", { check = true }))
 	if not cok then
@@ -181,13 +194,95 @@ function M.env(cfg, kind, base)
 	}, { __index = base })
 end
 
--- The access log line of one request.
-local function access(out, req, res, t0)
-	local peer = req.peer and req.peer.addr or "-"
-	out:write(("%s %s %s \"%s %s HTTP/%s\" %d %d %.3f\n"):format(
-		os.date("!%Y-%m-%dT%H:%M:%SZ"), peer, req.headers:get("host") or "-",
-		req.method, req.target, req.version or "1.1", res.status or 0, res.bytes or 0,
-		clock.now() - t0))
+--- The default access log line of an entry.
+function M.line(e)
+	return ("%s %s %s \"%s %s HTTP/%s\" %d %d %.3f\n"):format(
+		os.date("!%Y-%m-%dT%H:%M:%SZ", math.floor(e.time)), e.client or "-", e.host or "-",
+		e.method, e.target, e.version, e.status, e.bytes, e.duration)
+end
+
+--[[- Makes the access logger of a worker: `logger(req, res, t0)`.
+
+req.log, set by the rules, or else cfg.log, picks what happens: true
+writes to cfg.access_log, false writes nothing, and a destination
+writes there. A destination is "-" for stdout, "syslog", or a path that
+is opened and appended for each line, so that the file can be rotated.
+A function gets the entry and returns a line for cfg.access_log, or nil.
+]]
+function M.logger(cfg)
+	local default = cfg.access_log or "-"
+	local failed = {}
+	local syslog
+	local function write(dest, line)
+		if line:sub(-1) ~= "\n" then
+			line = line .. "\n"
+		end
+		if dest == "-" then
+			io.stdout:write(line)
+			return
+		elseif dest == "syslog" then
+			syslog = syslog or require("posix.syslog")
+			syslog.openlog("mhttpx", syslog.LOG_PID, syslog.LOG_DAEMON)
+			syslog.syslog(syslog.LOG_INFO, line:sub(1, -2))
+			return
+		end
+		local f, err = io.open(dest, "a")
+		if f then
+			f:write(line)
+			f:close()
+		-- Logs a failed path once in a minute at most.
+		elseif clock.now() - (failed[dest] or -math.huge) >= 60 then
+			failed[dest] = clock.now()
+			log("access log %s: %s", dest, tostring(err))
+		end
+	end
+	io.stdout:setvbuf("line")
+	return function(req, res, t0)
+		local how = req.log
+		if how == nil then
+			how = cfg.log
+		end
+		if how == nil then
+			how = true
+		end
+		if how == false then
+			return
+		end
+		local e = {
+			time = os.time(), client = req.client or req.peer and req.peer.addr,
+			host = req.headers:get("host"), method = req.method, target = req.target,
+			path = req.path, version = req.version or "1.1", status = res.status or 0,
+			bytes = res.bytes or 0, duration = clock.now() - t0,
+			site = req.site and req.site.name, request = req.headers, response = res.headers,
+		}
+		if type(how) == "function" then
+			local ok, line = pcall(how, e)
+			if not ok then
+				log("log function: %s", tostring(line))
+			elseif line then
+				write(default, tostring(line))
+			end
+			return
+		end
+		write(how == true and default or how, M.line(e))
+	end
+end
+
+--- The files the access log can write, for unveil.
+function M.log_paths(cfg)
+	local paths = {}
+	local function add(v)
+		if type(v) == "string" and v:sub(1, 1) == "/" then
+			paths[v] = true
+		end
+	end
+	add(cfg.access_log)
+	rules.actions(cfg, function(a, v)
+		if a == "log" then
+			add(v)
+		end
+	end)
+	return paths
 end
 
 -- Drops root: the groups, the group, then the user.
@@ -237,6 +332,11 @@ local function restrict(cfg)
 			end
 		end
 	end
+	-- The access log opens each file for each line, as the worker user.
+	for p in pairs(M.log_paths(cfg)) do
+		promises.wpath, promises.cpath = true, true
+		paths[p] = "wc"
+	end
 	for p in (cfg.promises or ""):gmatch("%S+") do
 		promises[p] = true
 	end
@@ -275,11 +375,7 @@ local function worker(cfg, listeners)
 	end)
 
 	-- Everything that reads files runs before the privileges go.
-	local out = io.stdout
-	if cfg.access_log and cfg.access_log ~= "-" then
-		out = assert(io.open(cfg.access_log, "a"))
-	end
-	out:setvbuf("line")
+	local access = M.logger(cfg)
 	if cfg.tls then
 		assert(tls.prepare(cfg.tls, "server"))
 	end
@@ -291,8 +387,8 @@ local function worker(cfg, listeners)
 	end)
 	-- Handler modules load as root, before unveil hides package.path.
 	rules.actions(cfg, function(a, v)
-		if a == "handler" and type(v) == "string" then
-			require(v)
+		if a == "handler" and type(v) ~= "function" then
+			require(rules.module_name(v))
 		end
 	end)
 	for _, name in ipairs({ "posix.syslog", "mhttp.static", "mhttp.cgi", "mhttp.proxy",
@@ -305,6 +401,15 @@ local function worker(cfg, listeners)
 		drop(cfg.user or "nobody")
 	end
 	restrict(cfg)
+	-- Say now when the worker user cannot write a log file.
+	for p in pairs(M.log_paths(cfg)) do
+		local f, ferr = io.open(p, "a")
+		if f then
+			f:close()
+		else
+			M.warn(("access log %s: %s"):format(p, tostring(ferr)))
+		end
+	end
 
 	local loop = mpoll.new({ on_error = function(err)
 		log("%s", tostring(err))
@@ -381,7 +486,7 @@ local function worker(cfg, listeners)
 				handler = function(req, res)
 					local t0 = clock.now()
 					local r = table.pack(handle(req, res))
-					access(out, req, res, t0)
+					access(req, res, t0)
 					return table.unpack(r, 1, r.n)
 				end,
 				on_error = function(err)
@@ -440,7 +545,7 @@ local function worker(cfg, listeners)
 		while loop.count > 1 and clock.now() < deadline do
 			loop:sleep(0.25)
 		end
-		out:flush()
+		io.stdout:flush()
 		os.exit(0, true)
 	end)
 	loop:run()

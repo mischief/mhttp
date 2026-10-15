@@ -53,7 +53,9 @@ local res = client.new():get("https://example.com/")
   over TCP or a unix socket), static files, CGI, Lua handlers in the
   worker, redirects and fixed replies; header changes add up
   by path. http redirects to https by itself, and serves ACME
-  challenges. TLS picks a cert per SNI name. A root master binds the
+  challenges. The access log goes to stdout, syslog, files that can be
+  rotated, or a Lua function, set per site and path. TLS picks a cert
+  per SNI name. A root master binds the
   ports and unix sockets, and a worker drops to a user and, on OpenBSD,
   pledges. SIGHUP
   reloads the config and the certs without dropping connections. See

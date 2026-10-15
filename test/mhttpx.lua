@@ -105,7 +105,7 @@ return { new = function(env)
 	local hits = env.metrics:counter("test_app_hits_total", "hits")
 	return function(req, res)
 		hits:inc()
-		return res:send(200, "module " .. req.path .. " " .. type(env.spawn))
+		return res:send(200, (env.config.greeting or "module") .. " " .. req.path .. " " .. type(env.spawn))
 	end
 end }
 ]])
@@ -124,6 +124,7 @@ return {
 	access_log = %q,
 	drain = 2,
 	max_conns = 10,
+	trust_forwarded = { "unix" },
 	listen = {
 		http = { "127.0.0.1:%d", { "unix:" .. %q, mode = "0600" } },
 		https = %s,
@@ -141,13 +142,17 @@ return {
 			["/api/*"] = { proxy = up },
 			["/api/exact"] = { status = 200, body = "exact" },
 			["/api/*/deeper/*"] = { status = 200, body = "deeper" },
+			["/quiet/*"] = { status = 200, body = "shh", log = false },
 		},
 		{ host = "*.wild.test", status = 200, body = "wild" },
 		{ host = "*.test", status = 200, body = "any test" },
 		{ host = "one.wild.test", status = 200, body = "exact wins" },
 		{ host = "plain.test", https = false, status = 200, body = "plain" },
 		{ host = "both.test", http = "serve", status = 200, body = "both" },
-		{ host = "note.test", status = 200, body = %q },
+		{ host = "note.test", status = 200, body = %q, log = %q },
+		{ host = "logfn.test", status = 200, body = "x",
+			log = function(e) return "FN " .. e.site .. " " .. e.status end },
+		{ host = "cfg.test", handler = { module = "mhttpx_test_app", greeting = "hey" } },
 		{ host = "unix.test", proxy = "unix:" .. %q },
 		{ host = "fn.test", handler = function(req, res) return res:send(200, "fn " .. req.path) end },
 		{ host = "mod.test", ["/app/*"] = { handler = "mhttpx_test_app" } },
@@ -155,7 +160,7 @@ return {
 }
 ]]):format(up_port, dir .. "/access.log", port, dir .. "/front.sock",
 		has_tls and ("%q"):format("127.0.0.1:" .. sport) or "nil", mport,
-		dir .. "/t.crt", dir .. "/t.key", dir .. "/acme", dir .. "/www", note, sock))
+		dir .. "/t.crt", dir .. "/t.key", dir .. "/acme", dir .. "/www", note, dir .. "/note.log", sock))
 end
 config("first")
 local cfg, lerr = daemon.load(conf)
@@ -216,11 +221,17 @@ tap.try("mhttpx", function()
 	tap.is(assert(get(S, "note.test", "/")).body, "first", "before reload")
 	tap.is(assert(get(S, "unix.test", "/u?v=1")).body, "unix /u?v=1 host=unix.test", "unix socket upstream")
 	tap.is(assert(get(S, "fn.test", "/z")).body, "fn /z", "handler function")
-	local ures = assert(c:request({ url = "http://both.test/u", unix = dir .. "/front.sock" }))
+	local ures = assert(c:request({ url = "http://both.test/u", unix = dir .. "/front.sock",
+		headers = { { "X-Forwarded-For", "203.0.113.9" } } }))
 	tap.is(ures.body, "both", "a unix socket listener")
 	local st = require("posix.sys.stat").stat(dir .. "/front.sock")
 	tap.is(st and ("%o"):format(st.st_mode & 511), "600", "the socket file mode")
 	tap.is(assert(get(S, "mod.test", "/app/q")).body, "module /app/q function", "handler module")
+	tap.is(assert(get(S, "cfg.test", "/c")).body, "hey /c function", "handler config")
+	tap.is(assert(get(S, "files.test", "/quiet/a")).body, "shh", "quiet path")
+	tap.is(assert(get(S, "logfn.test", "/")).body, "x", "log function site")
+	-- Rotation: the next line goes to a new file.
+	assert(os.rename(dir .. "/access.log", dir .. "/access.log.0"))
 	bad([[return { listen = { http = "127.0.0.1:1" }, sites = { { host = "a", handler = "no.such.mod" } } }]],
 		"no module no.such.mod", "missing handler module")
 
@@ -246,7 +257,7 @@ tap.try("mhttpx", function()
 	has(('mhttpx_requests_total{site="app.test",scheme="%s",code="2xx"} 3'):format(S), "site metrics")
 	has(('mhttpx_requests_total{site="default",scheme="%s",code="4xx"} 2'):format(S), "default site")
 	has('mhttp_proxy_upstream_errors_total', "proxy metrics registered")
-	has("test_app_hits_total 1", "a handler module's own metric")
+	has("test_app_hits_total 2", "a handler module's own metric")
 	has("mhttpx_connections_max 10", "connection gauge")
 	tap.is(assert(c:request({ url = ("http://127.0.0.1:%d/other"):format(mport) })).status, 404,
 		"the metrics listener serves only /metrics")
@@ -281,12 +292,29 @@ tap.try("mhttpx", function()
 	end
 	tap.is(body, "second", "SIGHUP loads the new config")
 
-	local f = io.open(dir .. "/access.log")
-	local logtext = f and f:read("a") or ""
-	if f then
-		f:close()
+	local function slurp(name)
+		local f = io.open(dir .. "/" .. name)
+		local t = f and f:read("a") or ""
+		if f then
+			f:close()
+		end
+		return t
 	end
+	local newer = slurp("access.log")
+	tap.ok(newer:find("note.test", 1, true) == nil and #newer > 0, "a new file after rotation")
+	local logtext = slurp("access.log.0") .. newer
 	tap.ok(logtext:find('"GET /x%?y=1 HTTP/1%.1" 200 %d+ [%d.]+\n'), "access log with bytes")
+	tap.ok(not logtext:find("/quiet/", 1, true), "log = false on a path")
+	tap.ok(logtext:find("\nFN logfn.test 200\n", 1, true), "a log function")
+	tap.ok(logtext:find(" 203.0.113.9 both.test ", 1, true), "trust_forwarded on a unix socket")
+	tap.ok(not logtext:find("note.test", 1, true), "a site with its own log")
+	local nf = io.open(dir .. "/note.log")
+	local notes = nf and nf:read("a") or ""
+	if nf then
+		nf:close()
+	end
+	tap.ok(notes:find('"GET / HTTP/1.1" 200', 1, true), "the site log file")
+	tap.ok(io.open(dir .. "/access.log.0"), "the rotated file stays")
 end)
 
 c:close()

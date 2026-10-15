@@ -26,7 +26,7 @@ M.ACTIONS = { "proxy", "static", "cgi", "handler", "redirect", "status" }
 local ROUTE = {
 	proxy = true, static = true, cgi = true, handler = true, redirect = true, status = true,
 	body = true,
-	headers = true, request_headers = true, strip = true,
+	headers = true, request_headers = true, strip = true, log = true,
 }
 local SITE = { host = true, http = true, https = true }
 local ACME = "^/%.well%-known/acme%-challenge/"
@@ -111,7 +111,7 @@ local function acme_route(cfg)
 end
 
 --- Calls fn(action, value) for each action in cfg, as for "static" and
--- its root.
+-- its root, and fn("log", value) for each log setting.
 function M.actions(cfg, fn)
 	local function visit(r)
 		if type(r) ~= "table" then
@@ -121,6 +121,9 @@ function M.actions(cfg, fn)
 			if r[a] ~= nil then
 				fn(a, r[a])
 			end
+		end
+		if r.log ~= nil then
+			fn("log", r.log)
 		end
 		for k, v in pairs(r) do
 			if is_path(k) then
@@ -133,6 +136,25 @@ function M.actions(cfg, fn)
 	end
 	visit(default_site(cfg))
 	visit(acme_route(cfg))
+	if cfg.log ~= nil then
+		fn("log", cfg.log)
+	end
+end
+
+--- Checks a log setting: true, false, "-", "syslog", a path or a
+-- function. Returns it, or raises.
+function M.check_log(v)
+	local t = type(v)
+	if t == "boolean" or t == "function" or v == "-" or v == "syslog"
+	    or t == "string" and v:sub(1, 1) == "/" then
+		return v
+	end
+	error("log must be true, false, \"-\", \"syslog\", a path or a function", 0)
+end
+
+--- The name of a handler module, from a name or a table with `module`.
+function M.module_name(h)
+	return type(h) == "table" and (h.module or h[1]) or h
 end
 
 -- Fills {host}, {path}, {target} and {query} in a redirect template.
@@ -147,7 +169,8 @@ end
 
 --[[- Makes the handler of a `handler` action.
 
-The value is a function `handler(req, res)`, or the name of a module.
+The value is a function `handler(req, res)`, the name of a module, or a
+table `{ module = name, ... }` that the module gets as `env.config`.
 The module returns a handler, or a table with `new(env)` that returns
 one. env has `spawn`, `sleep`, `stream`, `connect`, `client`, `log` and
 `metrics`, an `mhttp.metrics` registry for the metrics of the module.
@@ -157,21 +180,22 @@ function M.handler(h, env)
 	if type(h) == "function" then
 		return h
 	end
-	assert(type(h) == "string", "handler must be a function or a module name")
+	local name = M.module_name(h)
+	assert(type(name) == "string", "handler must be a function, a module name or a table with module")
 	if env.check then
-		assert(package.searchpath(h, package.path) or package.searchpath(h, package.cpath),
-			"no module " .. h)
+		assert(package.searchpath(name, package.path) or package.searchpath(name, package.cpath),
+			"no module " .. name)
 		return function() end
 	end
-	-- http and https share one instance of a module.
+	-- http and https share one instance of each module and config.
 	if env.instances and env.instances[h] then
 		return env.instances[h]
 	end
-	local m = require(h)
+	local m = require(name)
 	if type(m) == "table" and m.new then
-		m = m.new(env)
+		m = m.new(setmetatable({ config = type(h) == "table" and h or {} }, { __index = env }))
 	end
-	assert(type(m) == "function", "module " .. h .. " gives no handler")
+	assert(type(m) == "function", "module " .. name .. " gives no handler")
 	if env.instances then
 		env.instances[h] = m
 	end
@@ -256,11 +280,18 @@ local function route(r, env, where, pattern)
 	if not ok then
 		error(("%s: %s"):format(where, tostring(fn)), 0)
 	end
+	if r.log ~= nil then
+		local lok, lerr = pcall(M.check_log, r.log)
+		if not lok then
+			error(("%s: %s"):format(where, lerr), 0)
+		end
+	end
 	return {
 		fn = fn,
 		headers = r.headers,
 		request_headers = r.request_headers,
 		strip = strip and strip:gsub("/+$", ""),
+		log = r.log,
 	}
 end
 
@@ -337,6 +368,9 @@ local function serve(cs, req, res)
 		end
 		if r.fn then
 			fn, strip = r.fn, r.strip
+		end
+		if r.log ~= nil then
+			req.log = r.log
 		end
 	end
 	if #resp > 0 then
@@ -433,6 +467,7 @@ function M.compile(cfg, env)
 	-- counts each request under its site.
 	local answer = function(req, res)
 		local cs, host = req.site, req.site_host
+		req.log = cs.base.log
 		if cs == acme then
 			return serve(cs, req, res)
 		elseif kind == "http" and cs.http == "redirect" then
@@ -454,7 +489,27 @@ function M.compile(cfg, env)
 			end,
 		})
 	end
-	return function(req, res)
+	-- The client address: the peer, or with trust_forwarded the last
+	-- X-Forwarded-For entry when the peer is trusted. A unix socket peer
+	-- is "unix".
+	local trust = cfg.trust_forwarded
+	local trusted = {}
+	for _, a in ipairs(type(trust) == "table" and trust or {}) do
+		trusted[a] = true
+	end
+	local function client(req)
+		local p = req.peer
+		local addr = type(p) == "table" and p.addr or nil
+		if trust == true or trusted[addr or "unix"] then
+			local all = req.headers:get_all("x-forwarded-for")
+			local last = all[#all] and all[#all]:match("([^,%s]+)%s*$")
+			if last then
+				return last
+			end
+		end
+		return addr
+	end
+	local function route(req, res)
 		if kind == "http" and acme and (req.path or ""):find(ACME) then
 			req.site, req.site_host = acme, ""
 			return answer(req, res)
@@ -462,6 +517,10 @@ function M.compile(cfg, env)
 		local host = (req.headers:get("host") or ""):lower():gsub(":%d+$", ""):gsub("%.$", "")
 		req.site, req.site_host = lookup(host), host
 		return answer(req, res)
+	end
+	return function(req, res)
+		req.client = client(req)
+		return route(req, res)
 	end
 end
 

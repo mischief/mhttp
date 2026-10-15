@@ -10,7 +10,18 @@ local isolate = {
 
 return {
 	user = "_mhttpx",          -- the worker drops to this user
-	access_log = "/var/log/mhttpx.log",  -- or "-" for stdout
+	-- Where request lines go: "-" for stdout, "syslog", or a file. The
+	-- worker opens the file for each line as its user, so give it a
+	-- directory it owns, and let newsyslog rotate the file:
+	--   /var/log/mhttpx/access.log _mhttpx:_mhttpx 640 7 * $D0 Z
+	access_log = "/var/log/mhttpx/access.log",
+	-- log = true, on the top, on a site or on a path: true for
+	-- access_log, false for none, a destination, or function(e) that
+	-- returns a line. e has time, client, host, method, target, path,
+	-- version, status, bytes, duration, site, request and response.
+	-- Behind another proxy, take the client from X-Forwarded-For when
+	-- the peer is one of these ("unix" for a unix socket), or true:
+	-- trust_forwarded = { "unix", "192.168.0.1" },
 	drain = 10,                -- seconds an old worker may finish requests
 	-- pledge = false,         -- OpenBSD: no pledge or unveil
 	-- The worker pledges and unveils what the actions need. A handler
@@ -51,6 +62,7 @@ return {
 			["/api/*"] = { proxy = app },
 			["/cgi-bin/*"] = { cgi = "/var/www/cgi-bin", strip = true },
 			["/old"] = { redirect = "https://{host}/new" },
+			["/health"] = { status = 200, body = "ok\n", log = false },
 		},
 		{ host = "mirror.example.org", static = { root = "/var/www/mirror", list = true } },
 		{ host = "*.example.org", status = 404, body = "no such site\n" },
@@ -65,5 +77,7 @@ return {
 			return res:send(200, "hello from " .. req.path .. "\n")
 		end },
 		{ host = "paste.example.org", handler = "myapp.http" },
+		-- A table gives the module env.config.
+		{ host = "notes.example.org", handler = { module = "myapp.notes", db = "/var/db/notes" } },
 	},
 }
