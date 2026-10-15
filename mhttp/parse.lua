@@ -73,7 +73,8 @@ function M.new(kind, limits)
 		buf = "",
 		pos = 1,
 		scan = 1, -- where the search for the end of the head starts
-		pending = {}, -- fed pieces not yet in buf
+		pending = {},
+		pending_len = 0, -- their bytes
 		pending_nl = false,
 		ended = false,
 		state = "head",
@@ -90,6 +91,7 @@ function Parser:feed(s)
 	end
 	local p = self.pending
 	p[#p + 1] = s
+	self.pending_len = (self.pending_len or 0) + #s
 	if not self.pending_nl and s:find("\n", 1, true) then
 		self.pending_nl = true
 	end
@@ -118,10 +120,9 @@ function Parser:flush(force)
 	end
 	if not force and not self.pending_nl and not self.ended
 	    and (self.state == "head" or self.state == "trailer") then
-		local n = #self.buf - self.pos + 1
-		for i = 1, #p do
-			n = n + #p[i]
-		end
+		-- A running total: adding up the pieces here on each call would
+		-- cost time in the square of their number.
+		local n = #self.buf - self.pos + 1 + self.pending_len
 		if n <= self.lim.max_head then
 			return
 		end
@@ -131,6 +132,7 @@ function Parser:flush(force)
 	self.pos = 1
 	self.scan = math.max(1, self.scan - drop)
 	self.pending = {}
+	self.pending_len = 0
 	self.pending_nl = false
 end
 
@@ -498,12 +500,19 @@ function Parser:st_head()
 		self.scan = math.max(self.scan, self.pos)
 	end
 	local pos = self.pos
+	-- Nothing new since the last look: the answer is the same.
+	if self.scan > #buf and self.scan > pos and not self.ended then
+		return nil
+	end
 	local e = buf:find("\r\n\r\n", math.max(pos, self.scan - 3), true)
 	if not e then
 		local n = #buf - pos + 1
-		-- Fail on a bare LF or CR now, not when a limit runs out.
-		if buf:sub(pos, pos) == "\n" or buf:find("[^\r]\n", pos)
-		    or buf:find("\r[^\n]", pos) then
+		-- Fail on a bare LF or CR now, not when a limit runs out. Only
+		-- the new bytes, and the one before them, need a look; a scan of
+		-- the whole head on each call would cost time in its square.
+		local from = math.max(pos, self.scan - 1)
+		if buf:sub(pos, pos) == "\n" or buf:find("[^\r]\n", from)
+		    or buf:find("\r[^\n]", from) then
 			return self:fail("line", "bare CR or LF")
 		end
 		local le = buf:find("\r\n", pos, true)
