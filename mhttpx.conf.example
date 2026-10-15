@@ -25,6 +25,11 @@ return {
 		-- scraper can reach it.
 		metrics = "127.0.0.1:9180",
 	},
+	-- A second mhttpx can run the apps as another user, behind this one:
+	--   listen = { http = { "unix:/var/www/run/apps.sock", group = "_mhttpx" } }
+	-- The socket file is 0660 and owned by its user unless the entry
+	-- gives mode, owner or group. This one proxies to it with
+	--   proxy = "unix:/var/www/run/apps.sock"
 	-- A name means the acme-client files /etc/ssl/NAME.crt and
 	-- /etc/ssl/private/NAME.key. A pair gives the paths. SNI picks one.
 	certs = { "example.org", { "/etc/ssl/other.crt", "/etc/ssl/private/other.key" } },

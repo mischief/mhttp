@@ -45,8 +45,26 @@ function M.warn(msg)
 	end
 end
 
---- Splits "addr:port", "[v6]:port" or "port" into address and port.
-function M.parse_listen(s)
+--[[- Splits a listen address into address and port: "addr:port",
+"[v6]:port" or "port". "unix:/path" gives "unix" and the path. An entry
+can be a table, `{ "unix:/path", mode = "0660", owner = "user", group =
+"group" }`; the extra fields go to the socket file.
+@return address, port and the table, or nil and the reason
+]]
+function M.parse_listen(e)
+	local s, extra = e, nil
+	if type(e) == "table" then
+		s, extra = e[1], e
+	end
+	if type(s) ~= "string" then
+		return nil, "bad listen address " .. tostring(s)
+	end
+	local path = s:match("^unix:(/.+)$")
+	if path then
+		return "unix", path, extra
+	elseif extra then
+		return nil, "only a unix socket takes a table: " .. s
+	end
 	local addr, port = s:match("^%[(.+)%]:(%d+)$")
 	if not addr then
 		addr, port = s:match("^([^:]*):(%d+)$")
@@ -109,7 +127,8 @@ function M.load(path)
 		if k ~= "http" and k ~= "https" and k ~= "metrics" then
 			return nil, "listen: unknown kind " .. tostring(k)
 		end
-		if type(v) == "string" then
+		-- One entry alone: a string, or a unix socket table.
+		if type(v) == "string" or type(v) == "table" and (v.mode or v.owner or v.group) then
 			v = { v }
 			cfg.listen[k] = v
 		end
@@ -118,7 +137,7 @@ function M.load(path)
 			if not a then
 				return nil, ("listen %s: %s"):format(k, port)
 			end
-			if k == "https" and not cfg.https_port then
+			if k == "https" and a ~= "unix" and not cfg.https_port then
 				cfg.https_port = port
 			end
 			n = n + 1
@@ -211,6 +230,13 @@ local function restrict(cfg)
 			end
 		end
 	end)
+	for _, list in pairs(cfg.listen) do
+		for _, e in ipairs(list) do
+			if M.parse_listen(e) == "unix" then
+				promises.unix = true
+			end
+		end
+	end
 	for p in (cfg.promises or ""):gmatch("%S+") do
 		promises[p] = true
 	end
@@ -346,7 +372,7 @@ local function worker(cfg, listeners)
 			servers[#servers + 1] = msrv
 			for _, l in ipairs(list) do
 				l.wait, l.on_close = loop.opts.wait, loop.opts.on_close
-				l.opts = { wait = loop.opts.wait, on_close = loop.opts.on_close }
+				l.opts = { wait = loop.opts.wait, on_close = loop.opts.on_close, unix = l.unix_path }
 				loop:serve(l, msrv, { max = 16 })
 			end
 		elseif list and #list > 0 then
@@ -373,7 +399,8 @@ local function worker(cfg, listeners)
 			for _, l in ipairs(list) do
 				l.wait = loop.opts.wait
 				l.on_close = loop.opts.on_close
-				l.opts = { wait = loop.opts.wait, on_close = loop.opts.on_close, tls = t }
+				l.opts = { wait = loop.opts.wait, on_close = loop.opts.on_close, tls = t,
+					unix = l.unix_path }
 				loop:serve(l, srv, { gate = gate })
 			end
 		end
@@ -422,20 +449,59 @@ end
 
 -- Binds the listeners of cfg. Old ones with the same address and kind
 -- are kept.
+-- The mode and owner of a unix socket file. The owner is the worker
+-- user unless the entry names one.
+local function unix_opts(cfg, extra)
+	extra = extra or {}
+	local o = { mode = tonumber(extra.mode or "0660", 8) }
+	if not o.mode then
+		return nil, "bad mode " .. tostring(extra.mode)
+	end
+	local user = extra.owner or cfg.user
+	if user and unistd.geteuid() == 0 then
+		local pw = pwd.getpwnam(user)
+		if not pw then
+			return nil, "no such user " .. user
+		end
+		o.uid, o.gid = pw.pw_uid, pw.pw_gid
+	end
+	if extra.group then
+		local grp = require("posix.grp").getgrnam(extra.group)
+		if not grp then
+			return nil, "no such group " .. extra.group
+		end
+		o.gid = grp.gr_gid
+	end
+	return o
+end
+
 local function bind(cfg, old)
 	local all, by = {}, {}
 	for _, kind in ipairs(KINDS) do
 		all[kind] = {}
 		for _, spec in ipairs(cfg.listen[kind] or {}) do
-			local addr, port = M.parse_listen(spec)
+			local addr, port, extra = M.parse_listen(spec)
 			local key = kind .. "|" .. addr .. "|" .. port
 			local l = by[key] or old[key]
+			local uo
+			if addr == "unix" then
+				local err
+				uo, err = unix_opts(cfg, extra)
+				if not uo then
+					return nil, ("listen %s: %s"):format(port, err)
+				end
+			end
 			if not l then
 				local err
-				l, err = posix.listen(addr, port, { backlog = cfg.backlog })
+				l, err = posix.listen(addr, port, { backlog = cfg.backlog, unix = uo and port,
+					mode = uo and uo.mode, uid = uo and uo.uid, gid = uo and uo.gid })
 				if not l then
-					return nil, ("listen %s: %s"):format(spec, tostring(err))
+					return nil, ("listen %s: %s"):format(uo and port or spec, tostring(err))
 				end
+				l.unix_path = uo and port
+			elseif uo then
+				-- A kept socket takes the mode and owner of the new config.
+				posix.own_unix(port, uo)
 			end
 			old[key] = nil
 			by[key] = l
@@ -443,6 +509,14 @@ local function bind(cfg, old)
 		end
 	end
 	return all, by
+end
+
+-- Closes a listener of the master, and removes its socket file.
+local function unbind(l)
+	l:close()
+	if l.unix_path then
+		os.remove(l.unix_path)
+	end
 end
 
 -- Raises the soft limit of open files to the hard limit, as the login
@@ -533,6 +607,9 @@ function M.run(path)
 				signal.kill(current, signal.SIGTERM)
 				wait.wait(current)
 			end
+			for _, l in pairs(by) do
+				unbind(l)
+			end
 			log("stopped")
 			return true
 		end
@@ -548,7 +625,7 @@ function M.run(path)
 				else
 					-- What is left in by is no longer in the config.
 					for _, l in pairs(by) do
-						l:close()
+						unbind(l)
 					end
 					cfg, listeners, by = ncfg, nl, nby
 					local old = current

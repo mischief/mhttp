@@ -15,6 +15,7 @@ which blocks. A `tls` option wraps the streams with `mhttp.tls`.
 
 local socket = require("posix.sys.socket")
 local unistd = require("posix.unistd")
+local stat = require("posix.sys.stat")
 local fcntl = require("posix.fcntl")
 local errno = require("posix.errno")
 local ppoll = require("posix.poll")
@@ -239,7 +240,7 @@ of host and port.
 function M.connect(host, port, opts)
 	opts = opts or {}
 	local addrs
-	local family = M.literal(host)
+	local family = not opts.unix and M.literal(host)
 	if opts.unix then
 		addrs = { { family = socket.AF_UNIX, path = opts.unix } }
 	elseif family then
@@ -310,20 +311,31 @@ Listener.__index = Listener
 that several processes can each listen on the port and the kernel
 spreads connections between them; `tls`, options for
 `mhttp.tls.server`; and `wait` and `on_close` for the listener and for
-the streams it accepts
+the streams it accepts. `unix`: the path of a unix socket to listen on
+in place of host and port, with `mode` (0660), `uid` and `gid` for the
+socket file. A socket file that no process listens on is replaced.
 @treturn[1] Listener
 @return[2] nil and the reason
 ]]
 function M.listen(host, port, opts)
 	opts = opts or {}
-	local addrs, gerr = socket.getaddrinfo(host, tostring(port), {
-		family = socket.AF_UNSPEC, socktype = socket.SOCK_STREAM,
-		flags = socket.AI_PASSIVE,
-	})
-	if not addrs then
-		return nil, tostring(gerr)
+	local a
+	if opts.unix then
+		local ok, err = M.clear_unix(opts.unix)
+		if not ok then
+			return nil, err
+		end
+		a = { family = socket.AF_UNIX, path = opts.unix }
+	else
+		local addrs, gerr = socket.getaddrinfo(host, tostring(port), {
+			family = socket.AF_UNSPEC, socktype = socket.SOCK_STREAM,
+			flags = socket.AI_PASSIVE,
+		})
+		if not addrs then
+			return nil, tostring(gerr)
+		end
+		a = addrs[1]
 	end
-	local a = addrs[1]
 	local fd, err = socket.socket(a.family, socket.SOCK_STREAM, 0)
 	if not fd then
 		return nil, err
@@ -338,6 +350,9 @@ function M.listen(host, port, opts)
 	end
 	local ok
 	ok, err = socket.bind(fd, a)
+	if ok and opts.unix then
+		ok, err = M.own_unix(opts.unix, opts)
+	end
 	if ok then
 		ok, err = socket.listen(fd, opts.backlog or socket.SOMAXCONN)
 	end
@@ -370,7 +385,9 @@ function Listener:accept(deadline)
 		end
 		local fd, addr, en = socket.accept(self.fd)
 		if fd then
-			socket.setsockopt(fd, socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+			if not self.opts.unix then
+				socket.setsockopt(fd, socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+			end
 			local s = M.stream(fd, self.opts)
 			if self.opts.tls then
 				local terr
@@ -391,9 +408,49 @@ function Listener:accept(deadline)
 	end
 end
 
---- Returns the port the listener is bound to.
+--- Returns the port the listener is bound to, or nil for a unix socket.
 function Listener:port()
 	return socket.getsockname(self.fd).port
+end
+
+-- Removes a socket file at path that no process listens on. Refuses
+-- another kind of file, and a socket in use.
+function M.clear_unix(path)
+	local st = stat.lstat(path)
+	if not st then
+		return true
+	end
+	if stat.S_ISSOCK(st.st_mode) == 0 then
+		return nil, path .. ": exists and is not a socket"
+	end
+	local fd = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, 0)
+	if fd then
+		local ok = socket.connect(fd, { family = socket.AF_UNIX, path = path })
+		unistd.close(fd)
+		if ok then
+			return nil, path .. ": a process listens on it"
+		end
+	end
+	local ok, err = os.remove(path)
+	if not ok then
+		return nil, err
+	end
+	return true
+end
+
+-- Sets the mode and owner of a new socket file.
+function M.own_unix(path, opts)
+	local ok, err = stat.chmod(path, opts.mode or tonumber("660", 8))
+	if not ok then
+		return nil, err
+	end
+	if opts.uid or opts.gid then
+		ok, err = unistd.chown(path, opts.uid or -1, opts.gid or -1)
+		if not ok then
+			return nil, err
+		end
+	end
+	return true
 end
 
 function Listener:close()

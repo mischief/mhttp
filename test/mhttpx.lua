@@ -124,7 +124,11 @@ return {
 	access_log = %q,
 	drain = 2,
 	max_conns = 10,
-	listen = { http = "127.0.0.1:%d", https = %s, metrics = "127.0.0.1:%d" },
+	listen = {
+		http = { "127.0.0.1:%d", { "unix:" .. %q, mode = "0600" } },
+		https = %s,
+		metrics = "127.0.0.1:%d",
+	},
 	certs = { { %q, %q } },
 	acme = %q,
 	default = 404,
@@ -149,7 +153,7 @@ return {
 		{ host = "mod.test", ["/app/*"] = { handler = "mhttpx_test_app" } },
 	},
 }
-]]):format(up_port, dir .. "/access.log", port,
+]]):format(up_port, dir .. "/access.log", port, dir .. "/front.sock",
 		has_tls and ("%q"):format("127.0.0.1:" .. sport) or "nil", mport,
 		dir .. "/t.crt", dir .. "/t.key", dir .. "/acme", dir .. "/www", note, sock))
 end
@@ -212,6 +216,10 @@ tap.try("mhttpx", function()
 	tap.is(assert(get(S, "note.test", "/")).body, "first", "before reload")
 	tap.is(assert(get(S, "unix.test", "/u?v=1")).body, "unix /u?v=1 host=unix.test", "unix socket upstream")
 	tap.is(assert(get(S, "fn.test", "/z")).body, "fn /z", "handler function")
+	local ures = assert(c:request({ url = "http://both.test/u", unix = dir .. "/front.sock" }))
+	tap.is(ures.body, "both", "a unix socket listener")
+	local st = require("posix.sys.stat").stat(dir .. "/front.sock")
+	tap.is(st and ("%o"):format(st.st_mode & 511), "600", "the socket file mode")
 	tap.is(assert(get(S, "mod.test", "/app/q")).body, "module /app/q function", "handler module")
 	bad([[return { listen = { http = "127.0.0.1:1" }, sites = { { host = "a", handler = "no.such.mod" } } }]],
 		"no module no.such.mod", "missing handler module")
@@ -293,6 +301,7 @@ for _ = 1, 50 do
 	sleep(0.1)
 end
 tap.ok(done, "SIGTERM stops the master")
+tap.ok(not io.open(dir .. "/front.sock"), "the master removes its socket file")
 if not done then
 	signal.kill(pid, signal.SIGKILL)
 end
