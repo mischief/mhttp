@@ -182,6 +182,8 @@ end
  - `sleep(sec)`: waits without blocking the loop, such as `loop.sleep`
  - `timeout`: seconds with no output before the program is killed (60)
  - `max_head`: bytes of program header (16 KiB)
+ - `metrics`: an `mhttp.metrics` registry for programs running and
+   failures by reason
  - `max_hold`: bytes of output to hold while the request body still
    comes in (8 MiB)
 @treturn function `handler(req, res)`
@@ -193,8 +195,22 @@ function M.handler(opts)
 	local timeout = opts.timeout or 60
 	local max_head = opts.max_head or 16 * 1024
 	local max_hold = opts.max_hold or 8 * 1024 * 1024
+	local running, failures
+	if opts.metrics then
+		running = opts.metrics:gauge("mhttp_cgi_running", "CGI programs running")
+		failures = opts.metrics:counter("mhttp_cgi_failures_total",
+			"CGI requests that failed", { "reason" })
+	end
+	local function failed(reason)
+		if failures then
+			failures:inc({ reason = reason })
+		end
+	end
 
 	local function reap(pid)
+		if running then
+			running:dec()
+		end
 		for _ = 1, 40 do
 			local p = wait.wait(pid, wait.WNOHANG)
 			if p ~= 0 then
@@ -229,7 +245,11 @@ function M.handler(opts)
 		local env = environment(req, script_name, path_info, file, opts)
 		local pid, in_fd, out_fd = spawn(file, env, dir)
 		if not pid then
+			failed("start")
 			return res:send(500, "cannot start the program\n")
+		end
+		if running then
+			running:inc()
 		end
 		local stdin, stdout = wrap(in_fd), wrap(out_fd)
 
@@ -261,8 +281,10 @@ function M.handler(opts)
 				stdin:close()
 				reap(pid)
 				if err == "timeout" then
+					failed("timeout")
 					return res:send(504, "the program timed out\n")
 				end
+				failed("header")
 				return res:send(502, "the program ended without a header\n")
 			end
 			buf = buf .. s
@@ -274,6 +296,7 @@ function M.handler(opts)
 				if not fields then
 					stdout:close()
 					reap(pid)
+					failed("header")
 					return res:send(502, tostring(ferr) .. "\n")
 				end
 				buf = buf:sub(j + 1)
@@ -282,6 +305,7 @@ function M.handler(opts)
 			if #buf > max_head then
 				stdout:close()
 				reap(pid)
+				failed("header")
 				return res:send(502, "the program header is too long\n")
 			end
 		end
@@ -304,6 +328,7 @@ function M.handler(opts)
 				if err ~= "eof" then
 					stdout:close()
 					reap(pid)
+					failed("timeout")
 					return res:send(504, "the program timed out\n")
 				end
 				ended = true
@@ -316,12 +341,14 @@ function M.handler(opts)
 		if not ok then
 			stdout:close()
 			reap(pid)
+			failed("header")
 			return res:send(502, "the program sent bad fields\n")
 		end
 		local first = table.concat(held)
 		if first ~= "" and not res:write(first) then
 			stdout:close()
 			reap(pid)
+			failed("aborted")
 			return res:abort()
 		end
 		while not ended do
@@ -330,6 +357,7 @@ function M.handler(opts)
 				if err ~= "eof" then
 					stdout:close()
 					reap(pid)
+					failed("aborted")
 					return res:abort()
 				end
 				break
@@ -337,6 +365,7 @@ function M.handler(opts)
 			if not res:write(s) then
 				stdout:close()
 				reap(pid)
+				failed("aborted")
 				return res:abort()
 			end
 		end

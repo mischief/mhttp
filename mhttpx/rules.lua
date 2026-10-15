@@ -17,6 +17,7 @@ local proxy = require("mhttp.proxy")
 local static = require("mhttp.static")
 local cgi = require("mhttp.cgi")
 local headers = require("mhttp.headers")
+local metrics = require("mhttp.metrics")
 
 local M = {}
 
@@ -148,7 +149,8 @@ end
 
 The value is a function `handler(req, res)`, or the name of a module.
 The module returns a handler, or a table with `new(env)` that returns
-one. env has `spawn`, `sleep`, `stream`, `connect`, `client` and `log`.
+one. env has `spawn`, `sleep`, `stream`, `connect`, `client`, `log` and
+`metrics`, an `mhttp.metrics` registry for the metrics of the module.
 The worker loads the module before it drops root.
 ]]
 function M.handler(h, env)
@@ -161,11 +163,18 @@ function M.handler(h, env)
 			"no module " .. h)
 		return function() end
 	end
+	-- http and https share one instance of a module.
+	if env.instances and env.instances[h] then
+		return env.instances[h]
+	end
 	local m = require(h)
 	if type(m) == "table" and m.new then
 		m = m.new(env)
 	end
 	assert(type(m) == "function", "module " .. h .. " gives no handler")
+	if env.instances then
+		env.instances[h] = m
+	end
 	return m
 end
 
@@ -185,6 +194,8 @@ local function action(r, env)
 			spawn = env.spawn,
 			idle = p.idle,
 			on_error = env.on_error,
+			metrics = env.metrics,
+			name = up,
 		})
 	elseif r.static then
 		local s = type(r.static) == "table" and r.static or { root = r.static }
@@ -195,7 +206,7 @@ local function action(r, env)
 		for k, v in pairs(c) do
 			o[k] = v
 		end
-		o.stream, o.spawn, o.sleep = env.stream, env.spawn, env.sleep
+		o.stream, o.spawn, o.sleep, o.metrics = env.stream, env.spawn, env.sleep, env.metrics
 		return cgi.handler(o)
 	elseif r.handler then
 		return M.handler(r.handler, env)
@@ -360,7 +371,7 @@ end
 @tparam table cfg the config
 @tparam table env `kind` ("http" or "https"), `has_https`, `https_port`,
 `client` for proxies, `spawn`, `sleep` and `stream` from the loop,
-`on_error`
+`on_error`, `metrics` for an `mhttp.metrics` registry
 @treturn function `handler(req, res)`
 @raise on a bad site, with its name
 ]]
@@ -376,6 +387,8 @@ function M.compile(cfg, env)
 		if type(hosts) ~= "table" or #hosts == 0 then
 			error(e.name .. ": no host", 0)
 		end
+		-- The site label of the metrics.
+		cs.name = tostring(hosts[1]):lower()
 		for _, h in ipairs(hosts) do
 			if type(h) ~= "string" then
 				error(e.name .. ": a host must be a string", 0)
@@ -392,9 +405,11 @@ function M.compile(cfg, env)
 	end
 	table.sort(wild, more_specific)
 	local dflt = site(default_site(cfg), env, "default", has_https)
+	dflt.name = "default"
 	local acme = acme_route(cfg)
 	if acme then
 		acme = site(acme, env, "acme", has_https)
+		acme.name = "acme"
 	end
 	local port = env.https_port and env.https_port ~= 443 and ":" .. env.https_port or ""
 
@@ -414,13 +429,13 @@ function M.compile(cfg, env)
 		return dflt
 	end
 
-	return function(req, res)
-		if kind == "http" and acme and (req.path or ""):find(ACME) then
-			return serve(acme, req, res)
-		end
-		local host = (req.headers:get("host") or ""):lower():gsub(":%d+$", ""):gsub("%.$", "")
-		local cs = lookup(host)
-		if kind == "http" and cs.http == "redirect" then
+	-- Finds the site, then answers through answer. With metrics, answer
+	-- counts each request under its site.
+	local answer = function(req, res)
+		local cs, host = req.site, req.site_host
+		if cs == acme then
+			return serve(cs, req, res)
+		elseif kind == "http" and cs.http == "redirect" then
 			if host == "" then
 				return res:send(400, "no host\n", TEXT)
 			end
@@ -429,6 +444,24 @@ function M.compile(cfg, env)
 			return res:send(421, "unknown host\n", TEXT)
 		end
 		return serve(cs, req, res)
+	end
+	if env.metrics then
+		answer = metrics.instrument(env.metrics, answer, {
+			prefix = "mhttpx",
+			names = { "site", "scheme" },
+			labels = function(req)
+				return { site = req.site.name, scheme = kind }
+			end,
+		})
+	end
+	return function(req, res)
+		if kind == "http" and acme and (req.path or ""):find(ACME) then
+			req.site, req.site_host = acme, ""
+			return answer(req, res)
+		end
+		local host = (req.headers:get("host") or ""):lower():gsub(":%d+$", ""):gsub("%.$", "")
+		req.site, req.site_host = lookup(host), host
+		return answer(req, res)
 	end
 end
 

@@ -17,12 +17,14 @@ local clock = require("mhttp.clock")
 
 local M = {}
 
--- Copies a to b until the end, then ends the write side of b.
-local function copy(a, first, b, idle)
+-- Copies a to b until the end, then ends the write side of b. count(n)
+-- gets the size of each piece.
+local function copy(a, first, b, idle, count)
 	if first and first ~= "" then
 		if not b:write(first, clock.after(idle)) then
 			return
 		end
+		count(#first)
 	end
 	while true do
 		local s = a:read(65536, clock.after(idle))
@@ -32,6 +34,7 @@ local function copy(a, first, b, idle)
 		if not b:write(s, clock.after(idle)) then
 			break
 		end
+		count(#s)
 	end
 	if b.shutdown then
 		b:shutdown()
@@ -65,9 +68,38 @@ end
  - `spawn(fn)`: starts fn in a new task; needed for Upgrade
  - `idle`: seconds without data before a tunnel closes (300)
  - `on_error(err, req)`: called when the upstream fails
+ - `metrics`: an `mhttp.metrics` registry for upstream errors, open
+   tunnels and tunnel bytes, with the label `upstream` from `name`, or
+   the upstream URL when it is a string
 @treturn function `handler(req, res)`
 ]]
 function M.handler(opts)
+	local name = opts.name or (type(opts.upstream) == "string" and opts.upstream or "dynamic")
+	local errors, tunnels, tbytes
+	if opts.metrics then
+		errors = opts.metrics:counter("mhttp_proxy_upstream_errors_total",
+			"upstream requests that failed", { "upstream", "kind" })
+		tunnels = opts.metrics:gauge("mhttp_proxy_tunnels", "open tunnels", { "upstream" })
+		tbytes = opts.metrics:counter("mhttp_proxy_tunnel_bytes_total",
+			"bytes copied through tunnels", { "upstream", "direction" })
+	end
+	local up_l, down_l = { upstream = name, direction = "up" }, { upstream = name, direction = "down" }
+	local function failed(err, req)
+		if errors then
+			errors:inc({ upstream = name, kind = type(err) == "table" and err.kind or "io" })
+		end
+		if opts.on_error then
+			opts.on_error(err, req)
+		end
+	end
+	local function counter(l)
+		if not tbytes then
+			return function() end
+		end
+		return function(n)
+			tbytes:inc(l, n)
+		end
+	end
 	local cl = opts.client or client.new({
 		connect = opts.connect,
 		tls = opts.tls,
@@ -145,9 +177,7 @@ function M.handler(opts)
 			stream = true,
 		})
 		if not up then
-			if opts.on_error then
-				opts.on_error(err, req)
-			end
+			failed(err, req)
 			if res.started then
 				return res:abort()
 			end
@@ -189,18 +219,25 @@ function M.handler(opts)
 				return
 			end
 			local done = 0
+			local tl = { upstream = name }
+			if tunnels then
+				tunnels:inc(tl)
+			end
 			local function finish()
 				done = done + 1
 				if done == 2 then
 					down:close()
 					upstream:close()
+					if tunnels then
+						tunnels:dec(tl)
+					end
 				end
 			end
 			opts.spawn(function()
-				copy(upstream, up_rest, down, tunnel_idle)
+				copy(upstream, up_rest, down, tunnel_idle, counter(down_l))
 				finish()
 			end)
-			copy(down, down_rest, upstream, tunnel_idle)
+			copy(down, down_rest, upstream, tunnel_idle, counter(up_l))
 			finish()
 			return
 		end
@@ -214,9 +251,7 @@ function M.handler(opts)
 			local s, rerr = up:read()
 			if not s then
 				if rerr then
-					if opts.on_error then
-						opts.on_error(rerr, req)
-					end
+					failed(rerr, req)
 					return res:abort()
 				end
 				break

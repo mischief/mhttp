@@ -248,7 +248,8 @@ end
 
 --- A response, given to the handler.
 -- Set `status` and `headers`, then call `send`, or `start`, `write` and
--- `finish`. The head goes out with the first body bytes.
+-- `finish`. The head goes out with the first body bytes. `bytes` counts
+-- the body bytes written.
 -- @type Response
 local Response = {}
 Response.__index = Response
@@ -374,8 +375,10 @@ function Response:write(data)
 			return nil, "more bytes than content-length"
 		end
 		self.left = self.left - #data
-		return self:send_raw(data)
-	elseif m == "chunked" then
+	end
+	-- Body bytes, without the head or the chunk framing.
+	self.bytes = (self.bytes or 0) + #data
+	if m == "chunked" then
 		return self:send_raw(wire.chunk(data))
 	end
 	return self:send_raw(data)

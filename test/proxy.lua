@@ -76,7 +76,10 @@ loop:spawn(function()
 end)
 
 local errors = 0
+local reg = require("mhttp.metrics").new()
 local h = proxy.handler({
+	metrics = reg,
+	name = "test",
 	upstream = function(req)
 		if req.path == "/cut" then
 			return ("http://127.0.0.1:%d"):format(tl:port())
@@ -173,6 +176,21 @@ loop:spawn(function()
 	s:close()
 
 	tap.ok(errors >= 3, "on_error for upstream failures")
+	-- The tunnel ends after both copies stop.
+	for _ = 1, 50 do
+		if reg:render():find('mhttp_proxy_tunnels{upstream="test"} 0', 1, true) then
+			break
+		end
+		loop:sleep(0.05)
+	end
+	local text = reg:render()
+	tap.ok(text:find('mhttp_proxy_upstream_errors_total{upstream="test",kind="connect"} 1', 1, true),
+		"metrics: connect error")
+	tap.ok(text:find('mhttp_proxy_upstream_errors_total{upstream="test",kind="timeout"} 1', 1, true),
+		"metrics: timeout")
+	tap.ok(text:find('mhttp_proxy_tunnels{upstream="test"} 0', 1, true), "metrics: tunnel closed")
+	tap.ok(text:find('mhttp_proxy_tunnel_bytes_total{upstream="test",direction="up"} 10', 1, true),
+		"metrics: bytes up")
 	c:close()
 	ul:close()
 	tl:close()

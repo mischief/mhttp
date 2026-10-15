@@ -36,8 +36,10 @@ prog("plain.txt", "not a program", 420)
 
 local loop = mpoll.new()
 local r = router.new()
+local reg = require("mhttp.metrics").new()
 local function handler(prefix, timeout)
 	return cgi.handler({
+		metrics = reg,
 		root = dir,
 		prefix = prefix,
 		timeout = timeout,
@@ -111,6 +113,10 @@ loop:spawn(function()
 	tap.is(res.body, "/cgi/sub/inner.cgi|/x/", "nested program and PATH_INFO")
 	res = req({ path = "/fds.cgi" })
 	tap.is(res.body, "", "the program gets only stdin, stdout, stderr")
+	local text = reg:render()
+	tap.ok(text:find('mhttp_cgi_failures_total{reason="timeout"} 1', 1, true), "metrics: timeout")
+	tap.ok(text:find('mhttp_cgi_failures_total{reason="header"} 2', 1, true), "metrics: bad headers")
+	tap.ok(text:find("mhttp_cgi_running 0", 1, true), "metrics: nothing running")
 	c:close()
 	l:close()
 end)

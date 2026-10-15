@@ -23,6 +23,7 @@ local mpoll = require("mhttp.io.poll")
 local server = require("mhttp.server")
 local client = require("mhttp.client")
 local tls = require("mhttp.tls")
+local metrics = require("mhttp.metrics")
 local clock = require("mhttp.clock")
 local rules = require("mhttpx.rules")
 
@@ -62,7 +63,7 @@ function M.parse_listen(s)
 	return addr, tonumber(port)
 end
 
-local KINDS = { "http", "https" }
+local KINDS = { "http", "https", "metrics" }
 local FIELDS = {}
 for name in ("user access_log drain pledge listen certs tls acme default sites server_name "
 	.. "upstream_tls upstream_idle connect_timeout backlog max_body idle head body write "
@@ -105,7 +106,7 @@ function M.load(path)
 	end
 	local n = 0
 	for k, v in pairs(cfg.listen) do
-		if k ~= "http" and k ~= "https" then
+		if k ~= "http" and k ~= "https" and k ~= "metrics" then
 			return nil, "listen: unknown kind " .. tostring(k)
 		end
 		if type(v) == "string" then
@@ -164,9 +165,10 @@ end
 -- The access log line of one request.
 local function access(out, req, res, t0)
 	local peer = req.peer and req.peer.addr or "-"
-	out:write(("%s %s %s \"%s %s HTTP/%s\" %d %.3f\n"):format(
+	out:write(("%s %s %s \"%s %s HTTP/%s\" %d %d %.3f\n"):format(
 		os.date("!%Y-%m-%dT%H:%M:%SZ"), peer, req.headers:get("host") or "-",
-		req.method, req.target, req.version or "1.1", res.status or 0, clock.now() - t0))
+		req.method, req.target, req.version or "1.1", res.status or 0, res.bytes or 0,
+		clock.now() - t0))
 end
 
 -- Drops root: the groups, the group, then the user.
@@ -281,7 +283,10 @@ local function worker(cfg, listeners)
 	local loop = mpoll.new({ on_error = function(err)
 		log("%s", tostring(err))
 	end })
+	local reg = metrics.new()
 	local env = {
+		metrics = reg,
+		instances = {},
 		client = client.new({
 			connect = function(h, p, o)
 				return loop:connect(h, p, o)
@@ -313,9 +318,38 @@ local function worker(cfg, listeners)
 	local servers = {}
 	-- One budget for all listeners. A proxied connection holds two fds.
 	local gate = { max = cfg.max_conns or M.max_conns() }
+	reg:gauge("mhttpx_connections", "open client connections", nil, function()
+		return gate.n or 0
+	end)
+	reg:gauge("mhttpx_connections_max", "the connection limit", nil, function()
+		return gate.max
+	end)
+	reg:gauge("mhttpx_worker_start_time_seconds", "when this worker started"):set(os.time())
 	for _, kind in ipairs(KINDS) do
 		local list = listeners[kind]
-		if list and #list > 0 then
+		if kind == "metrics" and list and #list > 0 then
+			-- Scrapes have a gate of their own, so they work at the limit.
+			local mhandler = reg:handler()
+			local msrv = server.new({
+				handler = function(req, res)
+					if req.path == "/metrics" and (req.method == "GET" or req.method == "HEAD") then
+						return mhandler(req, res)
+					end
+					return res:send(404, "not found\n")
+				end,
+				on_error = function(err)
+					log("metrics: %s", tostring(err))
+				end,
+				idle = 30, head = 10, body = 10, write = 30,
+				name = cfg.server_name,
+			})
+			servers[#servers + 1] = msrv
+			for _, l in ipairs(list) do
+				l.wait, l.on_close = loop.opts.wait, loop.opts.on_close
+				l.opts = { wait = loop.opts.wait, on_close = loop.opts.on_close }
+				loop:serve(l, msrv, { max = 16 })
+			end
+		elseif list and #list > 0 then
 			local handle = rules.compile(cfg, M.env(cfg, kind, env))
 			local srv = server.new({
 				handler = function(req, res)

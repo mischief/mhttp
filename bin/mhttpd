@@ -7,6 +7,7 @@ local server = require("mhttp.server")
 local router = require("mhttp.router")
 local static = require("mhttp.static")
 local clock = require("mhttp.clock")
+local metrics = require("mhttp.metrics")
 
 local function usage()
 	io.stderr:write([[
@@ -18,6 +19,7 @@ usage: mhttpd [-lq] [-a addr] [-p port] [-c dir] [-C prefix]
   -c dir      run CGI programs from dir
   -C prefix   path prefix of the CGI programs (/cgi-bin)
   -q          no access log
+  -M addr:port  serve Prometheus metrics at /metrics on this address
   --cert, --key   serve TLS with this certificate and key
 ]])
 	os.exit(64)
@@ -43,6 +45,8 @@ while i <= #arg do
 		o.prefix = val():gsub("/+$", "")
 	elseif a == "-q" then
 		o.quiet = true
+	elseif a == "-M" then
+		o.metrics = val()
 	elseif a == "--cert" then
 		o.cert = val()
 	elseif a == "--key" then
@@ -57,8 +61,10 @@ end
 
 local loop = mpoll.new()
 local r = router.new()
+local reg = metrics.new()
 if o.cgi then
 	r:any(o.prefix .. "/*path", require("mhttp.cgi").handler({
+		metrics = reg,
 		root = o.cgi,
 		prefix = o.prefix,
 		stream = function(fd)
@@ -84,7 +90,22 @@ if not l then
 	io.stderr:write("mhttpd: ", tostring(err), "\n")
 	os.exit(1)
 end
-local handler = r:handler()
+local handler = metrics.instrument(reg, r:handler(), { prefix = "mhttpd" })
+if o.metrics then
+	local maddr, mport = o.metrics:match("^%[?([^%]]*)%]?:(%d+)$")
+	local ml, merr = maddr and loop:listen(maddr, tonumber(mport))
+	if not ml then
+		io.stderr:write("mhttpd: metrics: ", tostring(merr or "bad address " .. o.metrics), "\n")
+		os.exit(1)
+	end
+	local mh = reg:handler()
+	loop:serve(ml, server.new({ handler = function(req, res)
+		if req.path == "/metrics" then
+			return mh(req, res)
+		end
+		return res:send(404, "not found\n")
+	end }))
+end
 local srv = server.new({
 	handler = function(req, res)
 		local t0 = clock.now()

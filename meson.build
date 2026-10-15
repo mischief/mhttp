@@ -24,7 +24,7 @@ endif
 src = meson.current_source_dir()
 
 foreach t : ['request', 'response', 'smuggle', 'wire', 'split', 'coro', 'url', 'router',
-            'http', 'event', 'poll', 'tls', 'static', 'proxy', 'cgi', 'mhttpx']
+            'http', 'event', 'poll', 'tls', 'static', 'proxy', 'cgi', 'metrics', 'mhttpx']
   test(t, lua, args : [files('test' / t + '.lua')],
        protocol : 'tap', workdir : src, timeout : 120,
        env : ['MHTTP_CPATH=' + meson.project_build_root()])

@@ -102,14 +102,16 @@ end
 -- A handler module, loaded by name.
 put("mhttpx_test_app.lua", [[
 return { new = function(env)
+	local hits = env.metrics:counter("test_app_hits_total", "hits")
 	return function(req, res)
+		hits:inc()
 		return res:send(200, "module " .. req.path .. " " .. type(env.spawn))
 	end
 end }
 ]])
 package.path = dir .. "/?.lua;" .. package.path
 
-local port, sport = free_port(), free_port()
+local port, sport, mport = free_port(), free_port(), free_port()
 local conf = dir .. "/mhttpx.lua"
 local function config(note)
 	put("mhttpx.lua", ([[
@@ -122,7 +124,7 @@ return {
 	access_log = %q,
 	drain = 2,
 	max_conns = 10,
-	listen = { http = "127.0.0.1:%d", https = %s },
+	listen = { http = "127.0.0.1:%d", https = %s, metrics = "127.0.0.1:%d" },
 	certs = { { %q, %q } },
 	acme = %q,
 	default = 404,
@@ -147,7 +149,8 @@ return {
 		{ host = "mod.test", ["/app/*"] = { handler = "mhttpx_test_app" } },
 	},
 }
-]]):format(up_port, dir .. "/access.log", port, has_tls and ("%q"):format("127.0.0.1:" .. sport) or "nil",
+]]):format(up_port, dir .. "/access.log", port,
+		has_tls and ("%q"):format("127.0.0.1:" .. sport) or "nil", mport,
 		dir .. "/t.crt", dir .. "/t.key", dir .. "/acme", dir .. "/www", note, sock))
 end
 config("first")
@@ -227,6 +230,19 @@ tap.try("mhttpx", function()
 	tap.is(assert(get("http", "files.test", "/.well-known/acme-challenge/token")).body, "proof",
 		"acme directory")
 
+	local mres = assert(c:request({ url = ("http://127.0.0.1:%d/metrics"):format(mport) }))
+	local text = mres.body
+	local function has(line, name)
+		tap.ok(text:find(line, 1, true), name .. ": " .. line)
+	end
+	has(('mhttpx_requests_total{site="app.test",scheme="%s",code="2xx"} 3'):format(S), "site metrics")
+	has(('mhttpx_requests_total{site="default",scheme="%s",code="4xx"} 2'):format(S), "default site")
+	has('mhttp_proxy_upstream_errors_total', "proxy metrics registered")
+	has("test_app_hits_total 1", "a handler module's own metric")
+	has("mhttpx_connections_max 10", "connection gauge")
+	tap.is(assert(c:request({ url = ("http://127.0.0.1:%d/other"):format(mport) })).status, 404,
+		"the metrics listener serves only /metrics")
+
 	-- 9 or more of 10 connections in use give a warning.
 	local idle = {}
 	for i = 1, 9 do
@@ -262,7 +278,7 @@ tap.try("mhttpx", function()
 	if f then
 		f:close()
 	end
-	tap.ok(logtext:find('"GET /x?y=1 HTTP/1.1" 200', 1, true), "access log")
+	tap.ok(logtext:find('"GET /x%?y=1 HTTP/1%.1" 200 %d+ [%d.]+\n'), "access log with bytes")
 end)
 
 c:close()

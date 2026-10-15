@@ -21,6 +21,9 @@ return {
 	listen = {
 		http = { "0.0.0.0:80", "[::]:80" },
 		https = { "0.0.0.0:443", "[::]:443" },
+		-- Prometheus metrics at /metrics. Bind it where only the
+		-- scraper can reach it.
+		metrics = "127.0.0.1:9180",
 	},
 	-- A name means the acme-client files /etc/ssl/NAME.crt and
 	-- /etc/ssl/private/NAME.key. A pair gives the paths. SNI picks one.
@@ -51,7 +54,8 @@ return {
 		{ host = "app.example.org", proxy = "unix:/var/www/run/app.sock" },
 		-- A handler(req, res) in the worker. A module name loads the
 		-- module as root; it returns a handler, or a table whose
-		-- new(env) returns one. A slow handler stalls the worker.
+		-- new(env) returns one. env.metrics takes its own metrics.
+		-- A slow handler stalls the worker.
 		{ host = "hello.example.org", handler = function(req, res)
 			return res:send(200, "hello from " .. req.path .. "\n")
 		end },

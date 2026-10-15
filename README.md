@@ -59,7 +59,11 @@ local res = client.new():get("https://example.com/")
   `mhttpx.conf.example`. `contrib/openbsd/mhttpx` is an rc.d script.
 
 The handlers they use are modules: `mhttp.static`, `mhttp.proxy` and
-`mhttp.cgi`.
+`mhttp.cgi`. `mhttp.metrics` keeps Prometheus metrics: counters, gauges
+and histograms for any program, and `instrument` adds request metrics to
+any handler. The proxy and CGI handlers add their own when given a
+registry. `mhttpx` serves them on a `metrics` listener, and `mhttpd -M`
+on an address of its own.
 
 The parser on its own:
 
