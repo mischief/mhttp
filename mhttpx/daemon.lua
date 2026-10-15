@@ -301,6 +301,8 @@ local function worker(cfg, listeners)
 		end,
 	}
 	local servers = {}
+	-- One budget for all listeners. A proxied connection holds two fds.
+	local gate = { max = cfg.max_conns or M.max_conns() }
 	for _, kind in ipairs(KINDS) do
 		local list = listeners[kind]
 		if list and #list > 0 then
@@ -328,7 +330,7 @@ local function worker(cfg, listeners)
 				l.wait = loop.opts.wait
 				l.on_close = loop.opts.on_close
 				l.opts = { wait = loop.opts.wait, on_close = loop.opts.on_close, tls = t }
-				loop:serve(l, srv, { max = cfg.max_conns or 1024 })
+				loop:serve(l, srv, { gate = gate })
 			end
 		end
 	end
@@ -384,6 +386,25 @@ local function bind(cfg, old)
 	return all, by
 end
 
+-- Raises the soft limit of open files to the hard limit, as the login
+-- class allows.
+local function raise_nofile()
+	local resource = require("posix.sys.resource")
+	local rl = resource.getrlimit(resource.RLIMIT_NOFILE)
+	if rl and rl.rlim_cur < rl.rlim_max then
+		rl.rlim_cur = rl.rlim_max
+		resource.setrlimit(resource.RLIMIT_NOFILE, rl)
+	end
+end
+
+--- The default connection limit: half the open files, less a reserve.
+function M.max_conns()
+	local resource = require("posix.sys.resource")
+	local rl = resource.getrlimit(resource.RLIMIT_NOFILE)
+	local n = rl and rl.rlim_cur or 256
+	return math.max(8, (n - 64) // 2)
+end
+
 --[[- Runs the master. It returns only on an error at startup, or after
 SIGTERM.
 @tparam string path the config file
@@ -393,6 +414,8 @@ function M.run(path)
 	if not cfg then
 		return nil, err
 	end
+	raise_nofile()
+	log("max connections %d", cfg.max_conns or M.max_conns())
 	local listeners, by
 	listeners, by = bind(cfg, {})
 	if not listeners then

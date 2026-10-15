@@ -247,34 +247,67 @@ to on_error, and the task tries again after 0.1 seconds.
 @param listener from `listen`
 @param server a `mhttp.server`
 @tparam[opt] table opts `max`: connections at once; at the limit the
-accept task waits for one to end
+accept task waits for one to end. `gate`: a table `{max = n}` shared by
+several serve calls, to limit their connections together.
 @treturn thread the accept task
 ]]
 function Loop:serve(listener, server, opts)
 	local max = opts and opts.max or math.huge
-	local active, acceptor = 0, nil
+	local gate = opts and opts.gate
+	if gate then
+		gate.n, gate.waiting = gate.n or 0, gate.waiting or {}
+	end
+	local active, acceptor, logged = 0, nil, -math.huge
 	local function conn(s)
 		local ok, err = xpcall(server.serve, debug.traceback, server, s)
 		active = active - 1
 		self:wake(acceptor)
+		if gate then
+			gate.n = gate.n - 1
+			for t in pairs(gate.waiting) do
+				gate.waiting[t] = nil
+				self:wake(t)
+			end
+		end
 		if not ok then
 			error(err, 0)
 		end
 	end
+	local function full()
+		return active >= max or gate and gate.n >= gate.max
+	end
 	acceptor = self:spawn(function()
 		while true do
-			while active >= max do
+			while full() do
+				if gate then
+					gate.waiting[acceptor] = true
+				end
 				self:suspend()
 			end
 			local s, err = listener:accept()
+			-- Another listener can fill the gate while this one waits
+			-- in accept. The new connection then waits for a place.
+			while s and full() do
+				if gate then
+					gate.waiting[acceptor] = true
+				end
+				self:suspend()
+			end
 			if s then
 				active = active + 1
+				if gate then
+					gate.n = gate.n + 1
+				end
 				self:spawn(conn, s)
 			elseif not listener.fd then
 				break
 			else
-				-- Such as EMFILE. Wait for other tasks to close fds.
-				self.on_error("accept: " .. tostring(err))
+				-- Such as EMFILE. Wait for other tasks to close fds, and
+				-- log once in 10 seconds at most.
+				if clock.now() - logged >= 10 then
+					logged = clock.now()
+					self.on_error("accept: " .. tostring(err))
+				end
 				self:sleep(0.1)
 			end
 		end

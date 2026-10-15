@@ -127,6 +127,37 @@ do
 	tap.is(loop.count, 0, "max: every task ends")
 end
 
+-- A gate limits two listeners together.
+do
+	local loop = mpoll.new()
+	local l1 = assert(loop:listen("127.0.0.1", 0))
+	local l2 = assert(loop:listen("127.0.0.1", 0))
+	local srv = server.new({ handler = require("app"), on_error = function() end })
+	local gate = { max = 1 }
+	loop:serve(l1, srv, { gate = gate })
+	loop:serve(l2, srv, { gate = gate })
+	local got = {}
+	loop:spawn(function()
+		local req = "GET /hello HTTP/1.1\r\nHost: x\r\n\r\n"
+		local a = assert(loop:connect("127.0.0.1", l1:port()))
+		assert(a:write(req))
+		got.a = a:read(4096, clock.after(2))
+		local b = assert(loop:connect("127.0.0.1", l2:port()))
+		assert(b:write(req))
+		got.wait = select(2, b:read(4096, clock.after(0.2)))
+		a:close()
+		got.b = b:read(4096, clock.after(2))
+		b:close()
+		l1:close()
+		l2:close()
+	end)
+	loop:run()
+	tap.ok(got.a and got.a:find("^HTTP/1.1 200"), "gate: first connection served")
+	tap.is(got.wait, "timeout", "gate: a connection on the other listener waits")
+	tap.ok(got.b and got.b:find("^HTTP/1.1 200"), "gate: served after the first ends")
+	tap.is(loop.count, 0, "gate: every task ends")
+end
+
 -- End to end: the server, the shared checks, and many clients at once.
 local loop = mpoll.new()
 local l = assert(loop:listen("127.0.0.1", 0))
