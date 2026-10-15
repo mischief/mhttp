@@ -180,13 +180,15 @@ local function restrict(cfg)
 	if not ok or cfg.pledge == false then
 		return
 	end
-	local promises = { stdio = true, inet = true, rpath = true, dns = true }
+	-- The dns promise reads /etc/hosts and /etc/resolv.conf without rpath.
+	local promises = { stdio = true, inet = true, dns = true }
 	local paths = { ["/etc/hosts"] = "r", ["/etc/resolv.conf"] = "r" }
 	rules.actions(cfg, function(a, v)
 		if a == "static" then
+			promises.rpath = true
 			paths[type(v) == "table" and v.root or v] = "r"
 		elseif a == "cgi" then
-			promises.proc, promises.exec = true, true
+			promises.rpath, promises.proc, promises.exec = true, true, true
 			local c = type(v) == "table" and v or { root = v }
 			paths[c.root or c.script] = "rx"
 		elseif a == "proxy" then
@@ -215,7 +217,9 @@ local function restrict(cfg)
 		list[#list + 1] = p
 	end
 	table.sort(list)
-	assert(sys.pledge(table.concat(list, " ")))
+	local pl = table.concat(list, " ")
+	assert(sys.pledge(pl))
+	log("pledge %s", pl)
 end
 
 -- Runs one worker on the listeners. It does not return.
