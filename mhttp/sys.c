@@ -101,12 +101,12 @@ l_unveil(lua_State *L)
 #endif
 }
 
-/* setproctitle(title): the whole title, without the program name */
+/* setproctitle(title): the system puts the program name first */
 static int
 l_setproctitle(lua_State *L)
 {
 #if defined(__OpenBSD__) || defined(__FreeBSD__) || defined(__NetBSD__)
-	setproctitle("-%s", luaL_checkstring(L, 1));
+	setproctitle("%s", luaL_checkstring(L, 1));
 	lua_pushboolean(L, 1);
 	return 1;
 #else

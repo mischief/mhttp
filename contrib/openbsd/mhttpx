@@ -8,8 +8,9 @@ daemon_logger="daemon.info"
 
 . /etc/rc.d/rc.subr
 
-# The master sets this title. Workers have "mhttpx: worker".
-pexp="mhttpx: master"
+# The master sets this title, after the name of the Lua interpreter.
+# Workers have "mhttpx: worker".
+pexp="lua[0-9.]*: mhttpx: master"
 rc_bg=YES
 
 rc_configtest() {
