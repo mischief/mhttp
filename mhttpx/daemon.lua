@@ -34,6 +34,16 @@ local function log(fmt, ...)
 end
 M.log = log
 
+--- Logs msg, and sends it to syslog at warning level.
+function M.warn(msg)
+	log("%s", msg)
+	local ok, syslog = pcall(require, "posix.syslog")
+	if ok then
+		syslog.openlog("mhttpx", syslog.LOG_PID, syslog.LOG_DAEMON)
+		syslog.syslog(syslog.LOG_WARNING, msg)
+	end
+end
+
 --- Splits "addr:port", "[v6]:port" or "port" into address and port.
 function M.parse_listen(s)
 	local addr, port = s:match("^%[(.+)%]:(%d+)$")
@@ -257,8 +267,8 @@ local function worker(cfg, listeners)
 			require(v)
 		end
 	end)
-	for _, name in ipairs({ "mhttp.static", "mhttp.cgi", "mhttp.proxy", "mhttp.date",
-		"mhttp.url", "mhttp.headers", "posix.dirent", "posix.stdlib", "posix.sys.stat",
+	for _, name in ipairs({ "posix.syslog", "mhttp.static", "mhttp.cgi", "mhttp.proxy",
+		"mhttp.date", "mhttp.url", "mhttp.headers", "posix.dirent", "posix.stdlib", "posix.sys.stat",
 		"posix.fcntl", "posix.errno" }) do
 		require(name)
 	end
@@ -334,6 +344,21 @@ local function worker(cfg, listeners)
 			end
 		end
 	end
+
+	-- Warns once when the connections reach 90% of the budget, and again
+	-- only after they drop below 80%.
+	loop:spawn(function()
+		local warned = false
+		while not stopping do
+			if not warned and gate.n and gate.n >= 0.9 * gate.max then
+				warned = true
+				M.warn(("%d of %d connections in use"):format(gate.n, gate.max))
+			elseif warned and gate.n < 0.8 * gate.max then
+				warned = false
+			end
+			loop:sleep(1)
+		end
+	end)
 
 	-- Drains on SIGTERM: no new connections, close idle ones as they
 	-- finish, then exit.

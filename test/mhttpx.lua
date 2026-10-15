@@ -121,6 +121,7 @@ local isolate = {
 return {
 	access_log = %q,
 	drain = 2,
+	max_conns = 10,
 	listen = { http = "127.0.0.1:%d", https = %s },
 	certs = { { %q, %q } },
 	acme = %q,
@@ -153,8 +154,14 @@ config("first")
 local cfg, lerr = daemon.load(conf)
 tap.ok(cfg, "the test config loads: " .. tostring(lerr))
 
+-- Warnings come back on a pipe, since unveil hides files from the worker.
+local warn_r, warn_w = assert(unistd.pipe())
 local pid = assert(unistd.fork())
 if pid == 0 then
+	unistd.close(warn_r)
+	daemon.warn = function(msg)
+		unistd.write(warn_w, msg .. "\n")
+	end
 	local ok = daemon.run(conf)
 	unistd._exit(ok and 0 or 1)
 end
@@ -219,6 +226,22 @@ tap.try("mhttpx", function()
 	end
 	tap.is(assert(get("http", "files.test", "/.well-known/acme-challenge/token")).body, "proof",
 		"acme directory")
+
+	-- 9 or more of 10 connections in use give a warning.
+	local idle = {}
+	for i = 1, 9 do
+		idle[i] = assert(posix.connect("127.0.0.1", port))
+	end
+	unistd.close(warn_w)
+	local ok_poll = require("posix.poll").rpoll(warn_r, 3000)
+	local warning = ok_poll == 1 and unistd.read(warn_r, 256):match("^[^\n]*") or nil
+	-- The client keeps its own connections open too.
+	local n = tonumber((warning or ""):match("^(%d+) of 10 connections in use$"))
+	tap.ok(n and n >= 9, "warning near the connection limit: " .. tostring(warning))
+	for _, s in ipairs(idle) do
+		s:close()
+	end
+	c:close()
 
 	config("second")
 	signal.kill(pid, signal.SIGHUP)
