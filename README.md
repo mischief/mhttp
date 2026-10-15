@@ -47,11 +47,14 @@ local res = client.new():get("https://example.com/")
 - `mhttpd [-l] [-c cgi-dir] [dir]` serves a directory, and CGI programs,
   at once. `mhttpd -h` lists the options.
 - `mhttpx -f config` is a reverse proxy and file server configured by a
-  Lua file, in the place of relayd or nginx: TLS with a cert per SNI
-  name, rules by host and path, header rules, proxy with WebSockets,
-  static files, CGI, redirects. A root master binds the ports, and a
-  worker drops to a user and, on OpenBSD, pledges. SIGHUP reloads the
-  config and the certs without dropping connections. See
+  Lua file, in the place of relayd or nginx. The config lists sites by
+  host. In a site, the most specific path pattern answers, so the order
+  of the rules does not matter. Actions are proxy (with WebSockets),
+  static files, CGI, redirects and fixed replies; header changes add up
+  by path. http redirects to https by itself, and serves ACME
+  challenges. TLS picks a cert per SNI name. A root master binds the
+  ports, and a worker drops to a user and, on OpenBSD, pledges. SIGHUP
+  reloads the config and the certs without dropping connections. See
   `mhttpx.conf.example`. `contrib/openbsd/mhttpx` is an rc.d script.
 
 The handlers they use are modules: `mhttp.static`, `mhttp.proxy` and

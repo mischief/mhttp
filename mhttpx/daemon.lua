@@ -52,6 +52,22 @@ function M.parse_listen(s)
 	return addr, tonumber(port)
 end
 
+local KINDS = { "http", "https" }
+local FIELDS = {}
+for name in ("user access_log drain pledge listen certs tls acme default sites server_name "
+	.. "upstream_tls upstream_idle connect_timeout backlog max_body idle head body write "
+	.. "max_conns https_port"):gmatch("%S+") do
+	FIELDS[name] = true
+end
+
+-- Turns a cert name into the paths acme-client uses.
+local function cert_pair(c)
+	if type(c) == "string" then
+		return { "/etc/ssl/" .. c .. ".crt", "/etc/ssl/private/" .. c .. ".key" }
+	end
+	return c
+end
+
 --[[- Loads and checks a config file. See mhttpx.conf.example.
 @return the config, or nil and the reason
 ]]
@@ -65,32 +81,73 @@ function M.load(path)
 	if not ok then
 		return nil, cfg
 	end
-	if type(cfg) ~= "table" or type(cfg.servers) ~= "table" then
-		return nil, path .. ": the config returns a table with servers"
+	if type(cfg) ~= "table" then
+		return nil, path .. ": the config returns a table"
 	end
-	for i, s in ipairs(cfg.servers) do
-		if type(s.listen) == "string" then
-			s.listen = { s.listen }
+	for k in pairs(cfg) do
+		if not FIELDS[k] then
+			return nil, "unknown field " .. tostring(k)
 		end
-		if type(s.listen) ~= "table" or #s.listen == 0 then
-			return nil, ("server %d: no listen addresses"):format(i)
+	end
+	if type(cfg.listen) ~= "table" then
+		return nil, "listen needs http or https addresses"
+	end
+	local n = 0
+	for k, v in pairs(cfg.listen) do
+		if k ~= "http" and k ~= "https" then
+			return nil, "listen: unknown kind " .. tostring(k)
 		end
-		for _, l in ipairs(s.listen) do
-			local a, perr = M.parse_listen(l)
+		if type(v) == "string" then
+			v = { v }
+			cfg.listen[k] = v
+		end
+		for _, l in ipairs(v) do
+			local a, port = M.parse_listen(l)
 			if not a then
-				return nil, ("server %d: %s"):format(i, perr)
+				return nil, ("listen %s: %s"):format(k, port)
 			end
+			if k == "https" and not cfg.https_port then
+				cfg.https_port = port
+			end
+			n = n + 1
 		end
-		if type(s.rules) ~= "table" then
-			return nil, ("server %d: no rules"):format(i)
+	end
+	if n == 0 then
+		return nil, "listen needs http or https addresses"
+	end
+	if cfg.listen.https and #cfg.listen.https > 0 then
+		local t = {}
+		for k, v in pairs(cfg.tls or {}) do
+			t[k] = v
 		end
-		-- Compile once now, so a bad rule fails here and not in a worker.
-		local cok, cerr = pcall(rules.compile, s.rules, {})
-		if not cok then
-			return nil, ("server %d: %s"):format(i, cerr)
+		local certs = {}
+		for _, c in ipairs(t.certs or {}) do
+			certs[#certs + 1] = cert_pair(c)
 		end
+		for _, c in ipairs(cfg.certs or {}) do
+			certs[#certs + 1] = cert_pair(c)
+		end
+		t.certs = #certs > 0 and certs or nil
+		if not t.certs and not t.cert then
+			return nil, "https needs certs"
+		end
+		cfg.tls = t
+	end
+	-- Compile once now, so a bad site fails here and not in a worker.
+	local cok, cerr = pcall(rules.compile, cfg, M.env(cfg, "https", {}))
+	if not cok then
+		return nil, tostring(cerr)
 	end
 	return cfg
+end
+
+--- The env of rules.compile for one kind of listener, over base.
+function M.env(cfg, kind, base)
+	return setmetatable({
+		kind = kind,
+		has_https = cfg.listen.https ~= nil and #cfg.listen.https > 0,
+		https_port = cfg.https_port,
+	}, { __index = base })
 end
 
 -- The access log line of one request.
@@ -123,18 +180,15 @@ local function restrict(cfg)
 	end
 	local promises = "stdio inet rpath dns"
 	local paths = { ["/etc/hosts"] = "r", ["/etc/resolv.conf"] = "r" }
-	for _, s in ipairs(cfg.servers) do
-		for _, r in ipairs(s.rules) do
-			if r.static then
-				local root = type(r.static) == "table" and r.static.root or r.static
-				paths[root] = "r"
-			elseif r.cgi then
-				promises = "stdio inet rpath dns proc exec"
-				local c = type(r.cgi) == "table" and r.cgi or { root = r.cgi }
-				paths[c.root or c.script] = "rx"
-			end
+	rules.actions(cfg, function(a, v)
+		if a == "static" then
+			paths[type(v) == "table" and v.root or v] = "r"
+		elseif a == "cgi" then
+			promises = "stdio inet rpath dns proc exec"
+			local c = type(v) == "table" and v or { root = v }
+			paths[c.root or c.script] = "rx"
 		end
-	end
+	end)
 	if sys.unveil("/", "") == nil then
 		return
 	end
@@ -165,17 +219,15 @@ local function worker(cfg, listeners)
 		out = assert(io.open(cfg.access_log, "a"))
 	end
 	out:setvbuf("line")
-	for _, s in ipairs(cfg.servers) do
-		if s.tls then
-			assert(tls.prepare(s.tls, "server"))
-		end
-		for _, r in ipairs(s.rules) do
-			local p = type(r.proxy) == "table" and r.proxy or nil
-			if (p and p.url or r.proxy or ""):find("^https://") then
-				assert(tls.prepare(p and p.tls or cfg.upstream_tls or {}, "client"))
-			end
-		end
+	if cfg.tls then
+		assert(tls.prepare(cfg.tls, "server"))
 	end
+	rules.actions(cfg, function(a, v)
+		local p = type(v) == "table" and v or { url = v }
+		if a == "proxy" and (p.url or ""):find("^https://") then
+			assert(tls.prepare(p.tls or cfg.upstream_tls or {}, "client"))
+		end
+	end)
 	for _, name in ipairs({ "mhttp.static", "mhttp.cgi", "mhttp.proxy", "mhttp.date",
 		"mhttp.url", "mhttp.headers", "posix.dirent", "posix.stdlib", "posix.sys.stat",
 		"posix.fcntl", "posix.errno" }) do
@@ -216,32 +268,35 @@ local function worker(cfg, listeners)
 		end,
 	}
 	local servers = {}
-	for i, s in ipairs(cfg.servers) do
-		local e = setmetatable({ proto = s.proto }, { __index = env })
-		local handle = rules.compile(s.rules, e)
-		local srv = server.new({
-			handler = function(req, res)
-				local t0 = clock.now()
-				local r = table.pack(handle(req, res))
-				access(out, req, res, t0)
-				return table.unpack(r, 1, r.n)
-			end,
-			on_error = function(err)
-				log("handler: %s", tostring(err))
-			end,
-			max_body = s.max_body or math.huge,
-			idle = s.idle or 60,
-			head = s.head or 30,
-			body = s.body or 60,
-			write = s.write or 60,
-			name = cfg.server_name,
-		})
-		servers[i] = srv
-		for _, l in ipairs(listeners[i]) do
-			l.wait = loop.opts.wait
-			l.on_close = loop.opts.on_close
-			l.opts = { wait = loop.opts.wait, on_close = loop.opts.on_close, tls = s.tls }
-			loop:serve(l, srv, { max = s.max_conns or 1024 })
+	for _, kind in ipairs(KINDS) do
+		local list = listeners[kind]
+		if list and #list > 0 then
+			local handle = rules.compile(cfg, M.env(cfg, kind, env))
+			local srv = server.new({
+				handler = function(req, res)
+					local t0 = clock.now()
+					local r = table.pack(handle(req, res))
+					access(out, req, res, t0)
+					return table.unpack(r, 1, r.n)
+				end,
+				on_error = function(err)
+					log("handler: %s", tostring(err))
+				end,
+				max_body = cfg.max_body or math.huge,
+				idle = cfg.idle or 60,
+				head = cfg.head or 30,
+				body = cfg.body or 60,
+				write = cfg.write or 60,
+				name = cfg.server_name,
+			})
+			servers[#servers + 1] = srv
+			local t = kind == "https" and cfg.tls or nil
+			for _, l in ipairs(list) do
+				l.wait = loop.opts.wait
+				l.on_close = loop.opts.on_close
+				l.opts = { wait = loop.opts.wait, on_close = loop.opts.on_close, tls = t }
+				loop:serve(l, srv, { max = cfg.max_conns or 1024 })
+			end
 		end
 	end
 
@@ -252,7 +307,7 @@ local function worker(cfg, listeners)
 			loop:sleep(0.25)
 		end
 		log("draining")
-		for _, list in ipairs(listeners) do
+		for _, list in pairs(listeners) do
 			for _, l in ipairs(list) do
 				l:close()
 			end
@@ -271,15 +326,16 @@ local function worker(cfg, listeners)
 	os.exit(0, true)
 end
 
--- Binds the listeners of cfg. Old ones with the same address are kept.
+-- Binds the listeners of cfg. Old ones with the same address and kind
+-- are kept.
 local function bind(cfg, old)
 	local all, by = {}, {}
-	for i, s in ipairs(cfg.servers) do
-		all[i] = {}
-		for _, spec in ipairs(s.listen) do
+	for _, kind in ipairs(KINDS) do
+		all[kind] = {}
+		for _, spec in ipairs(cfg.listen[kind] or {}) do
 			local addr, port = M.parse_listen(spec)
-			local key = addr .. "|" .. port
-			local l = old[key]
+			local key = kind .. "|" .. addr .. "|" .. port
+			local l = by[key] or old[key]
 			if not l then
 				local err
 				l, err = posix.listen(addr, port, { backlog = cfg.backlog })
@@ -289,7 +345,7 @@ local function bind(cfg, old)
 			end
 			old[key] = nil
 			by[key] = l
-			all[i][#all[i] + 1] = l
+			table.insert(all[kind], l)
 		end
 	end
 	return all, by

@@ -2,52 +2,46 @@
 -- Check it with: mhttpx -n -f /etc/mhttpx.lua
 -- Reload it with SIGHUP; the worker reads the TLS files again then.
 
-local tls = {
-	-- Several certs: each connection gets the one its SNI name is in.
-	certs = {
-		{ "/etc/ssl/example.org.crt", "/etc/ssl/private/example.org.key" },
-		{ "/etc/ssl/mirror.example.org.crt", "/etc/ssl/private/mirror.example.org.key" },
-	},
-}
-
 local app = "http://10.0.0.2:8080"
-local site = { "example.org", "www.example.org" }
+local isolate = {
+	["Cross-Origin-Opener-Policy"] = "same-origin",
+	["Cross-Origin-Embedder-Policy"] = "require-corp",
+}
 
 return {
 	user = "_mhttpx",          -- the worker drops to this user
 	access_log = "/var/log/mhttpx.log",  -- or "-" for stdout
-	drain = 30,                -- seconds an old worker may finish requests
+	drain = 10,                -- seconds an old worker may finish requests
 	-- pledge = false,         -- OpenBSD: no pledge or unveil
 
-	servers = {
-		{
-			listen = { "0.0.0.0:443", "[::]:443" },
-			tls = tls,
-			proto = "https",   -- X-Forwarded-Proto
-			rules = {
-				-- Header rules change fields and go on to the next rule.
-				{ path = "/app/*", response_headers = {
-					["Cross-Origin-Opener-Policy"] = "same-origin",
-					["Cross-Origin-Embedder-Policy"] = "require-corp",
-				} },
-				{ path = "*.wasm", response_headers = { ["Content-Type"] = "application/wasm" } },
+	listen = {
+		http = { "0.0.0.0:80", "[::]:80" },
+		https = { "0.0.0.0:443", "[::]:443" },
+	},
+	-- A name means the acme-client files /etc/ssl/NAME.crt and
+	-- /etc/ssl/private/NAME.key. A pair gives the paths. SNI picks one.
+	certs = { "example.org", { "/etc/ssl/other.crt", "/etc/ssl/private/other.key" } },
+	-- On http, /.well-known/acme-challenge/ of each host: a directory,
+	-- or a URL to proxy to.
+	acme = "/var/www/acme",
+	-- A request for no site: a URL to proxy to, a status, or a site.
+	default = 421,
 
-				-- The first rule with an action answers.
-				{ host = "mirror.example.org", static = { root = "/var/www/mirror", list = true } },
-				{ host = site, path = "/cgi-bin/*", strip = "/cgi-bin", cgi = "/var/www/cgi-bin" },
-				{ host = site, path = "/api/*", proxy = app },
-				{ host = site, static = "/var/www/htdocs" },
-				{ status = 421, body = "unknown host\n" },
-			},
+	-- Exact hosts win over "*." wildcards. On http, a site redirects to
+	-- https; http = "serve" serves it on both, https = false on http only.
+	sites = {
+		{ host = { "example.org", "www.example.org" },
+			static = "/var/www/htdocs",
+			-- The most specific path with an action answers. Headers
+			-- add up from the least to the most specific path.
+			["/app/*"] = { headers = isolate },
+			["/app/*.wasm"] = { headers = { ["Content-Type"] = "application/wasm" } },
+			["/api/*"] = { proxy = app },
+			["/cgi-bin/*"] = { cgi = "/var/www/cgi-bin", strip = true },
+			["/old"] = { redirect = "https://{host}/new" },
 		},
-		{
-			listen = { "0.0.0.0:80", "[::]:80" },
-			proto = "http",
-			rules = {
-				{ path = "/.well-known/acme-challenge/*", strip = "/.well-known/acme-challenge",
-				  static = "/var/www/acme" },
-				{ redirect = "https://{host}{target}" },
-			},
-		},
+		{ host = "mirror.example.org", static = { root = "/var/www/mirror", list = true } },
+		{ host = "*.example.org", status = 404, body = "no such site\n" },
+		{ host = "status.example.org", https = false, proxy = "http://127.0.0.1:8080" },
 	},
 }
