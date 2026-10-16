@@ -1,5 +1,5 @@
 # Lua, plus C modules: mhttp.sys and the libtls backend.
-project('mhttp', 'c', version : '0.1.0', meson_version : '>= 0.64.0',
+project('mhttp', 'c', version : '0.1', meson_version : '>= 0.64.0',
         license : 'ISC', default_options : ['c_std=c11', 'warning_level=2'])
 
 lua_version = get_option('lua_version')
