@@ -40,12 +40,8 @@ put("www/index.html", "home\n")
 put("www/nlos/app.wasm", "\0asm")
 put("acme/token", "proof")
 
-local has_tls = pcall(require, "mhttp.tls.libtls")
-	and os.execute("command -v openssl >/dev/null")
-if has_tls then
-	assert(os.execute(("cd %s && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 "
-		.. "-nodes -keyout t.key -out t.crt -days 2 -subj /CN=localhost >/dev/null 2>&1"):format(dir)))
-end
+-- The tests run from the source root. The daemon gets absolute paths.
+local certs = assert(unistd.getcwd()) .. "/test/certs/"
 
 -- Checks the config loader on one bad config.
 local function bad(text, want, name)
@@ -159,8 +155,8 @@ return {
 	},
 }
 ]]):format(up_port, dir .. "/access.log", port, dir .. "/front.sock",
-		has_tls and ("%q"):format("127.0.0.1:" .. sport) or "nil", mport,
-		dir .. "/t.crt", dir .. "/t.key", dir .. "/acme", dir .. "/www", note, dir .. "/note.log", sock))
+		("%q"):format("127.0.0.1:" .. sport), mport,
+		certs .. "server.pem", certs .. "server.key", dir .. "/acme", dir .. "/www", note, dir .. "/note.log", sock))
 end
 config("first")
 local cfg, lerr = daemon.load(conf)
@@ -190,11 +186,8 @@ local function get(scheme, host, path)
 		sleep(0.1)
 	end
 end
--- The site tests go over https when there is TLS, and over http then.
-local S = has_tls and "https" or "http"
-if not has_tls then
-	tap.skip("https listener", "no libtls or no openssl")
-end
+-- The site tests go over https.
+local S = "https"
 
 tap.try("mhttpx", function()
 	local res = assert(get(S, "app.test", "/x?y=1"))
@@ -235,17 +228,15 @@ tap.try("mhttpx", function()
 	bad([[return { listen = { http = "127.0.0.1:1" }, sites = { { host = "a", handler = "no.such.mod" } } }]],
 		"no module no.such.mod", "missing handler module")
 
-	if has_tls then
-		res = assert(get("http", "files.test", "/a?b=c"))
-		tap.is(res.status, 301, "http redirects")
-		tap.is(res.headers:get("location"), ("https://files.test:%d/a?b=c"):format(sport),
-			"redirect keeps the https port and target")
-		tap.is(assert(get("http", "nowhere.example", "/")).status, 301, "default redirects")
-		tap.is(assert(get("http", "plain.test", "/")).body, "plain", "https = false serves http")
-		tap.is(assert(get("https", "plain.test", "/")).status, 404, "https = false is not on https")
-		tap.is(assert(get("http", "both.test", "/")).body, "both", "http = \"serve\"")
-		tap.is(assert(get("https", "both.test", "/")).body, "both", "and https")
-	end
+	res = assert(get("http", "files.test", "/a?b=c"))
+	tap.is(res.status, 301, "http redirects")
+	tap.is(res.headers:get("location"), ("https://files.test:%d/a?b=c"):format(sport),
+		"redirect keeps the https port and target")
+	tap.is(assert(get("http", "nowhere.example", "/")).status, 301, "default redirects")
+	tap.is(assert(get("http", "plain.test", "/")).body, "plain", "https = false serves http")
+	tap.is(assert(get("https", "plain.test", "/")).status, 404, "https = false is not on https")
+	tap.is(assert(get("http", "both.test", "/")).body, "both", "http = \"serve\"")
+	tap.is(assert(get("https", "both.test", "/")).body, "both", "and https")
 	tap.is(assert(get("http", "files.test", "/.well-known/acme-challenge/token")).body, "proof",
 		"acme directory")
 

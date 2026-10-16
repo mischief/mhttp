@@ -4,6 +4,4 @@ shared_module('sys', 'sys.c',
               install : true,
               install_dir : cmoddir)
 
-if libtls_dep.found()
-  subdir('tls')
-endif
+subdir('tls')

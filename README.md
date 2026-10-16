@@ -29,9 +29,8 @@ local c = client.new()
 local res, err = c:get("http://127.0.0.1:8080/x")
 ```
 
-https and TLS servers use libtls: OpenBSD base, or libretls on Linux
-(Debian `libtls-dev`, Gentoo `dev-libs/libretls`). The rock and the
-meson build make the TLS module only where libtls links. See DESIGN.md.
+mhttp needs libtls: OpenBSD base, or libretls on Linux (Debian
+`libtls-dev`, Gentoo `dev-libs/libretls`). See DESIGN.md.
 
 ```sh
 luarocks --lua-version 5.4 install --dev mhttp

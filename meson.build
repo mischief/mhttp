@@ -1,4 +1,4 @@
-# Pure Lua, plus the optional C core of the libtls backend.
+# Lua, plus C modules: mhttp.sys and the libtls backend.
 project('mhttp', 'c', version : '0.1.0', meson_version : '>= 0.64.0',
         license : 'ISC', default_options : ['c_std=c11', 'warning_level=2'])
 
@@ -15,7 +15,11 @@ install_subdir('mhttp', install_dir : luadir,
 # The C modules land in build/mhttp, so the build directory works as a
 # cpath root for the tests.
 lua_dep = dependency('lua' + lua_version, 'lua-' + lua_version, 'lua', required : false)
-libtls_dep = dependency('libtls', required : get_option('libtls'))
+# OpenBSD has libtls in base, but no pkg-config file for it.
+libtls_dep = dependency('libtls', required : false)
+if not libtls_dep.found()
+  libtls_dep = meson.get_compiler('c').find_library('tls', has_headers : ['tls.h'])
+endif
 cmoddir = get_option('libdir') / 'lua' / lua_version / 'mhttp'
 if lua_dep.found()
   subdir('mhttp')
@@ -24,7 +28,8 @@ endif
 src = meson.current_source_dir()
 
 foreach t : ['request', 'response', 'smuggle', 'wire', 'split', 'coro', 'url', 'router',
-            'http', 'event', 'poll', 'tls', 'static', 'proxy', 'cgi', 'metrics', 'mhttpx']
+            'http', 'event', 'poll', 'tls', 'static', 'proxy', 'cgi', 'metrics', 'mhttpx',
+            'rockspec']
   test(t, lua, args : [files('test' / t + '.lua')],
        protocol : 'tap', workdir : src, timeout : 120,
        env : ['MHTTP_CPATH=' + meson.project_build_root()])

@@ -154,8 +154,7 @@ option that differs. `close` also closes the fd.
 
 `mhttp.tls.libtls` is the one backend: libtls from OpenBSD base, or
 libretls on Linux (Debian `libtls-dev`, Gentoo `dev-libs/libretls`).
-The rock and the meson build make its C core only where libtls links;
-without it, a `tls` option gives an error. The contract stays, so
+The rock and the meson build require libtls. The contract stays, so
 another backend can come back.
 
 libtls does not read the macOS keychain. Give a CA file there.

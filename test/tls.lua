@@ -1,8 +1,8 @@
 -- SPDX-License-Identifier: ISC
 -- TLS with libtls: a local CA, server and client certificates, mutual
--- TLS, SNI and pinning. Needs the openssl command to make the
--- certificates. MHTTP_CPATH adds a directory to package.cpath, for C
--- modules built outside luarocks.
+-- TLS, SNI and pinning. The certificates are in test/certs.
+-- MHTTP_CPATH adds a directory to package.cpath, for C modules built
+-- outside luarocks.
 package.path = "./?.lua;./?/init.lua;./test/?.lua;" .. package.path
 if os.getenv("MHTTP_CPATH") then
 	package.cpath = os.getenv("MHTTP_CPATH") .. "/?.so;" .. package.cpath
@@ -17,43 +17,19 @@ local clock = require("mhttp.clock")
 
 local backends = {}
 for _, name in ipairs(tls.backends) do
-	local ok, mod = pcall(require, name)
+	local ok, err = pcall(require, name)
+	tap.ok(ok, "backend " .. name .. " loads: " .. tostring(err))
 	if ok then
 		backends[#backends + 1] = name
-	else
-		tap.skip("backend " .. name, "does not load")
 	end
 end
-if #backends == 0 or not os.execute("command -v openssl >/dev/null") then
-	tap.skip("tls end to end", "no backend or no openssl")
+if #backends == 0 then
 	tap.done()
 end
 
--- Makes a CA, a server certificate for localhost and 127.0.0.1, and a
--- client certificate.
-local dir = os.tmpname()
-os.remove(dir)
-assert(os.execute("mkdir -p " .. dir))
-local function sh(cmd)
-	assert(os.execute("cd " .. dir .. " && " .. cmd .. " >/dev/null 2>&1"), cmd)
-end
-local EC = "-newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes"
-sh("openssl req -x509 " .. EC .. " -keyout ca.key -out ca.pem -days 2 -subj /CN=mhttp-test-ca")
-for _, c in ipairs({
-	{ "server", "/CN=localhost", "subjectAltName=DNS:localhost,IP:127.0.0.1" },
-	{ "client", "/CN=alice", "extendedKeyUsage=clientAuth" },
-	{ "other", "/CN=other.test", "subjectAltName=DNS:other.test" },
-}) do
-	local name, subj, ext = c[1], c[2], c[3]
-	sh(("openssl req %s -keyout %s.key -out %s.csr -subj %s"):format(EC, name, name, subj))
-	local fx = assert(io.open(dir .. "/" .. name .. ".ext", "w"))
-	fx:write(ext, "\n")
-	fx:close()
-	sh(("openssl x509 -req -in %s.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 "
-		.. "-out %s.pem -extfile %s.ext"):format(name, name, name))
-end
+-- The tests run from the source root.
 local function f(name)
-	return dir .. "/" .. name
+	return "test/certs/" .. name
 end
 
 local function handler(req, res)
@@ -200,7 +176,6 @@ with_server(backends[1], nil, function(loop, port)
 	c:close()
 end)
 
-os.execute("rm -rf " .. dir)
 -- After the peer closes, a write fails and does not loop.
 do
 	local loop = mpoll.new({ on_error = function() end })

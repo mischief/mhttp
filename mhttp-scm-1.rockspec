@@ -29,18 +29,46 @@ dependencies = {
   'luaposix',
 }
 
--- The Makefile installs every Lua module under mhttp/ and mhttpx/, and
--- builds mhttp.sys, and the libtls backend where libtls links.
+-- libtls is in OpenBSD base. On Linux, libretls gives it.
+external_dependencies = {
+  TLS = { header = 'tls.h', library = 'tls' },
+}
+
+-- Every Lua module must be in this list. test/rockspec.lua checks it.
 build = {
-  type = 'make',
-  build_variables = {
-    CFLAGS = '$(CFLAGS)',
-    LIBFLAG = '$(LIBFLAG)',
-    LUA_INCDIR = '$(LUA_INCDIR)',
-  },
-  install_variables = {
-    LUADIR = '$(LUADIR)',
-    LIBDIR = '$(LIBDIR)',
+  type = 'builtin',
+  modules = {
+    ['mhttp.sys'] = 'mhttp/sys.c',
+    ['mhttp.tls.libtls_core'] = {
+      sources = { 'mhttp/tls/libtls_core.c' },
+      libraries = { 'tls' },
+      incdirs = { '$(TLS_INCDIR)' },
+      libdirs = { '$(TLS_LIBDIR)' },
+    },
+    ['mhttp.cgi'] = 'mhttp/cgi.lua',
+    ['mhttp.client'] = 'mhttp/client.lua',
+    ['mhttp.clock'] = 'mhttp/clock.lua',
+    ['mhttp.coro'] = 'mhttp/coro.lua',
+    ['mhttp.date'] = 'mhttp/date.lua',
+    ['mhttp.headers'] = 'mhttp/headers.lua',
+    ['mhttp'] = 'mhttp/init.lua',
+    ['mhttp.io.event'] = 'mhttp/io/event.lua',
+    ['mhttp.io.poll'] = 'mhttp/io/poll.lua',
+    ['mhttp.io.posix'] = 'mhttp/io/posix.lua',
+    ['mhttp.metrics'] = 'mhttp/metrics.lua',
+    ['mhttp.parse'] = 'mhttp/parse.lua',
+    ['mhttp.proxy'] = 'mhttp/proxy.lua',
+    ['mhttp.router'] = 'mhttp/router.lua',
+    ['mhttp.server'] = 'mhttp/server.lua',
+    ['mhttp.static'] = 'mhttp/static.lua',
+    ['mhttp.status'] = 'mhttp/status.lua',
+    ['mhttp.syntax'] = 'mhttp/syntax.lua',
+    ['mhttp.tls'] = 'mhttp/tls.lua',
+    ['mhttp.tls.libtls'] = 'mhttp/tls/libtls.lua',
+    ['mhttp.url'] = 'mhttp/url.lua',
+    ['mhttp.wire'] = 'mhttp/wire.lua',
+    ['mhttpx.daemon'] = 'mhttpx/daemon.lua',
+    ['mhttpx.rules'] = 'mhttpx/rules.lua',
   },
   install = {
     bin = {
