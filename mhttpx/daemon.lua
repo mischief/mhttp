@@ -514,10 +514,14 @@ local function worker(cfg, listeners)
 	end
 
 	-- Warns once when the connections reach 90% of the budget, and again
-	-- only after they drop below 80%.
+	-- only after they drop below 80%. Closes old idle upstream connections.
 	loop:spawn(function()
-		local warned = false
+		local warned, ticks = false, 0
 		while not stopping do
+			ticks = ticks + 1
+			if ticks % 15 == 0 then
+				env.client:prune()
+			end
 			if not warned and gate.n and gate.n >= 0.9 * gate.max then
 				warned = true
 				M.warn(("%d of %d connections in use"):format(gate.n, gate.max))

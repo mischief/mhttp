@@ -43,6 +43,8 @@ Client.__index = Client
  - `idle`: seconds to wait for each read, inside `timeout` (none)
  - `connect_timeout`: seconds to connect, inside `timeout` (none)
  - `max_idle`: idle connections kept per origin (4)
+ - `pool_timeout`: seconds an idle connection stays in the pool (30).
+   Keep it below the keep-alive limit of the server.
  - `limits`: limits for `mhttp.parse`
  - `read_size`: bytes per read (64 KiB)
 @treturn Client
@@ -70,6 +72,7 @@ function M.new(opts)
 		read_idle = opts.idle,
 		connect_timeout = opts.connect_timeout,
 		max_idle = opts.max_idle or 4,
+		pool_timeout = opts.pool_timeout or 30,
 		limits = opts.limits,
 		read_size = opts.read_size or 64 * 1024,
 		idle = {},
@@ -86,13 +89,47 @@ function Client:close()
 	self.idle = {}
 end
 
--- Takes an idle connection to key, or makes one.
-function Client:conn(key, host, port, tls, deadline, unix)
+-- Closes the idle connections of list older than max_age. The oldest
+-- are first.
+local function expire(list, now, max_age)
+	while list[1] and now - list[1].since > max_age do
+		table.remove(list, 1).s:close()
+	end
+end
+
+--- Closes every idle connection older than `pool_timeout`. A program that
+-- keeps a client for a long time calls it now and then, so that idle
+-- connections to an origin with no more requests do not stay open.
+function Client:prune()
+	local now = clock.now()
+	for key, list in pairs(self.idle) do
+		expire(list, now, self.pool_timeout)
+		if #list == 0 then
+			self.idle[key] = nil
+		end
+	end
+end
+
+-- Tells whether an idle connection can carry a request. A read that
+-- does not wait gets EOF or unexpected bytes from a dead connection.
+local function usable(c, now, max_age)
+	if now - c.since > max_age then
+		return false
+	end
+	local _, err = c.s:read(1, now)
+	return err == "timeout"
+end
+
+-- Takes an idle connection to key, or makes one. fresh skips the pool.
+function Client:conn(key, host, port, tls, deadline, unix, fresh)
 	local list = self.idle[key]
-	if list and #list > 0 then
+	while not fresh and list and #list > 0 do
 		local c = table.remove(list)
-		c.reused = true
-		return c
+		if usable(c, clock.now(), self.pool_timeout) then
+			c.reused = true
+			return c
+		end
+		c.s:close()
 	end
 	local s, err = self.connect(host, port, { tls = tls, resolve = self.resolve, unix = unix,
 		deadline = clock.min(deadline, clock.after(self.connect_timeout)) })
@@ -108,8 +145,11 @@ function Client:release(c)
 		list = {}
 		self.idle[c.key] = list
 	end
+	local now = clock.now()
+	expire(list, now, self.pool_timeout)
 	if #list < self.max_idle then
 		c.p = parse.new("response", self.limits)
+		c.since = now
 		list[#list + 1] = c
 	else
 		c.s:close()
@@ -228,7 +268,8 @@ local function send(c, head, body, deadline, chunked)
 end
 
 -- One request, one try. Returns the response, or nil, err, retryable.
-function Client:once(req, u, deadline)
+-- fresh sends the request on a new connection.
+function Client:once(req, u, deadline, fresh)
 	local scheme = u.scheme
 	if scheme ~= "http" and scheme ~= "https" then
 		return fail("url", "scheme must be http or https")
@@ -284,7 +325,7 @@ function Client:once(req, u, deadline)
 		return fail("url", herr)
 	end
 
-	local c, cerr = self:conn(key, host, port, tls, deadline, req.unix)
+	local c, cerr = self:conn(key, host, port, tls, deadline, req.unix, fresh)
 	if not c then
 		return fail(cerr == "timeout" and "timeout" or "connect", cerr)
 	end
@@ -384,7 +425,7 @@ function Client:request(req)
 	while true do
 		local res, rerr, retry = self:once(req, u, deadline)
 		if not res and retry then
-			res, rerr = self:once(req, u, deadline)
+			res, rerr = self:once(req, u, deadline, true)
 		end
 		if not res then
 			return nil, rerr

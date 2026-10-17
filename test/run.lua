@@ -3,7 +3,7 @@
 local lua = arg[-1] or "lua"
 local failed = 0
 for _, t in ipairs({ "request", "response", "smuggle", "wire", "split", "coro", "url", "router", "http",
-	"event", "poll", "tls", "static", "proxy", "cgi", "metrics", "mhttpx", "rockspec" }) do
+	"event", "poll", "tls", "static", "proxy", "cgi", "metrics", "pool", "mhttpx", "rockspec" }) do
 	local ok = os.execute(("%s test/%s.lua"):format(lua, t))
 	if not ok then
 		failed = failed + 1

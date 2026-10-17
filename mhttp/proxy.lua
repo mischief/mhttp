@@ -57,7 +57,8 @@ end
    "unix:/path/to.sock" for http over a unix socket, or `fn(req)` that
    returns one, or nil and a status to answer with
  - `client`: an `mhttp.client`; default one with `connect`, `tls`,
-   `idle` (60), `connect_timeout` (10) and no whole-request timeout
+   `idle` (60), `connect_timeout` (10), `pool_timeout` (30) and no
+   whole-request timeout
  - `connect`: a connector for the default client, such as `loop.connect`
  - `tls`: TLS options for https upstreams
  - `proto`: the X-Forwarded-Proto value, such as "https"; or
@@ -107,6 +108,7 @@ function M.handler(opts)
 		idle = opts.read_idle or 60,
 		connect_timeout = opts.connect_timeout or 10,
 		max_idle = opts.max_idle or 16,
+		pool_timeout = opts.pool_timeout,
 	})
 	local tunnel_idle = opts.idle or 300
 
